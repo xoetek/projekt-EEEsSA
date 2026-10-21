@@ -248,7 +248,7 @@ void testAuthoritativeSnapshotApplication() {
     CHECK(snapshot.sounds.size() == 2);
     // beginCoop() emits menu/zone sounds; drain them so this test only sees
     // sounds carried by the snapshot.
-    target.takeSoundEvents();
+    (void)target.takeSoundEvents();
     target.applyNetworkSnapshot(snapshot);
 
     CHECK(target.player(core::PlayerId::P0).walkTime == 1.75f);
@@ -504,6 +504,26 @@ void testDeadPlayerDoesNotBlockAlly() {
     CHECK(!game.dead());
     CHECK(!game.player(core::PlayerId::P0).playerDead);
     CHECK(game.player(core::PlayerId::P1).health > 0.0f);
+}
+
+void testDeadPlayersDoNotRepeatHurtSound() {
+    RpgGame game;
+    game.beginCoop(ClassId::Warrior, ClassId::Archer);
+    game.setActivePlayers(2);
+    core::InputFrame frame;
+    frame.activePlayers = 2;
+    game.player(core::PlayerId::P0).health = -1.0f;
+    game.player(core::PlayerId::P1).health = -1.0f;
+
+    game.updateFrame(1.0f / 60.0f, frame);
+    CHECK(game.player(core::PlayerId::P0).playerDead);
+    CHECK(game.player(core::PlayerId::P1).playerDead);
+
+    // Dead players must not emit PlayerHurt on every following tick.
+    for (int i = 0; i < 20; ++i) {
+        game.updateFrame(1.0f / 60.0f, frame);
+    }
+    CHECK(!hasSound(game.takeSoundEvents(), SoundId::PlayerHurt));
 }
 
 void testTwoPlayerDeterminism() {
@@ -1163,6 +1183,7 @@ int main() {
     testTwoPlayerSimulation();
     testTwoPlayerCombatAndTargeting();
     testDeadPlayerDoesNotBlockAlly();
+    testDeadPlayersDoNotRepeatHurtSound();
     testTwoPlayerDeterminism();
     testClassSelectionAndScene();
     testMovementJumpAndCamera();

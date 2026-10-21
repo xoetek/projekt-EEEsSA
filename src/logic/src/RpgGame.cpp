@@ -901,12 +901,16 @@ void RpgGame::updatePlaying(core::f32 dt, const core::InputFrame& frame) {
 
     for (core::u8 i = 0; i < activePlayers_; ++i) {
         activeId_ = static_cast<core::PlayerId>(i);
-        if (!active().playerDead) {
-            active().health = std::min(active().maxHealth,
-                                       active().health + active().lifeRegen * dt);
-            active().mana = std::min(active().maxMana,
-                                     active().mana + active().manaRegen * dt);
+        // A dead player stays at zero health. Without this early-out the
+        // `health <= 0` transition below fired every tick, replaying the death
+        // sound forever and flooding the client with sound events.
+        if (active().playerDead) {
+            continue;
         }
+        active().health = std::min(active().maxHealth,
+                                   active().health + active().lifeRegen * dt);
+        active().mana = std::min(active().maxMana,
+                                 active().mana + active().manaRegen * dt);
         if (active().health <= 0.0f) {
             active().health = 0.0f;
             active().playerDead = true;
@@ -915,7 +919,8 @@ void RpgGame::updatePlaying(core::f32 dt, const core::InputFrame& frame) {
                 menuSelection_ = 0;
                 dialogueTimer_ = 0.0f;
             }
-            emit(core::SoundId::PlayerHurt);
+            // The fatal hit already emitted PlayerHurt from hurtPlayer();
+            // do not queue a second overlapping death sound here.
         }
     }
 
@@ -1494,6 +1499,11 @@ void RpgGame::killEnemy(EnemyState& enemy) {
 
 void RpgGame::hurtPlayer(core::PlayerId id, core::f32 amount) {
     PlayerState& target = players_[static_cast<core::usize>(id)];
+    // Projectiles/enemies can still reach a corpse; never re-trigger hurt
+    // sounds or effects for a player who is already dead.
+    if (target.playerDead) {
+        return;
+    }
     const core::f32 reduced = amount * (100.0f / (100.0f + target.armour));
     target.health -= std::max(1.0f, reduced);
     spawnEffect(target.position + core::Vec3{0.0f, 1.0f, 0.0f}, 0.6f,
