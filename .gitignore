@@ -24,3 +24,6 @@ xcuserdata/
 
 # Local sandbox override
 .pi/
+
+# Alternate/local build directories
+build-*/

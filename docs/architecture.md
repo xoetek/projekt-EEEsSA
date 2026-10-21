@@ -65,6 +65,68 @@ instanced cubes at spawn. `buildSnapshot()` writes one `MeshInstance` per box
 with a `trs3` model matrix; the renderer never knows what a "slime", a "sword"
 or a "menu" is.
 
+## Gameplay modules
+
+`eee_logic` is split into focused modules:
+
+| File | Responsibility |
+|---|---|
+| `RpgGame` | run state, classes, combat, projectiles, loot, inventory, zones, story, menus |
+| `Classes` | `ClassId`, `SkillId`, class stats, skill costs/cooldowns/radii |
+| `Items` | item bases, rarities, affixes, generation, stat aggregation |
+| `Zones` | six zone definitions: level bands, palettes, enemies, bosses, story |
+| `World` | small generic entity/component store used by tests and reusable systems |
+
+All of it is deterministic: no wall clock, no platform calls, and a single
+`u32` RNG state. `update(dt, InputState)` is reproducible for the same input
+sequence, which keeps the suite fast and would be the foundation for networked
+play or replays.
+
+## Items and inventory
+
+Items are generated from a base table (class-appropriate weapons, armour,
+helmets, boots, rings, amulets, flasks) with an item level. Rarity decides the
+number of affixes:
+
+- Normal: 0
+- Magic: 1–2 prefixes/suffixes
+- Rare: 3–4
+- Unique: fixed name + 4 affixes
+
+Weapon damage and armour scale with item level; affixes roll flat/percent
+damage, life, mana, armour, move speed, crit chance, life/mana regen and skill
+damage. Equipped items are aggregated into `ItemTotals`, which recomputes the
+player's derived stats on equip and level-up.
+
+Skill gems are items too: picking one up and using it in the inventory unlocks
+the class's E skill. Duplicate/off-class gems convert to gold. Flasks restore
+health or mana. Enemies drop loot (guaranteed for bosses), and right-click
+picks up the nearest drop within range.
+
+The app draws the inventory grid, tooltip, affixes and equipped-gear list from
+public `RpgGame` accessors; it never mutates game state itself.
+
+## Zones, bosses and progression
+
+`Zones` defines six zones with level ranges, visual palettes, two enemy types,
+one boss, story text and a villager line. Entering a zone rebuilds the static
+world and spawns level-scaled enemies plus the boss. Killing a boss opens a
+portal; right-clicking it loads the next zone. The final boss ends the run with
+a victory screen.
+
+XP uses `40 + 30*level + level^2`. Regular kills grant 70% of the current
+level requirement, bosses 300%, which moves a full clear from level 1 to the
+level-80 cap across the six zones. Enemy health/damage scale with their level.
+
+## Audio events
+
+Gameplay never calls an audio API. It pushes `core::SoundId` values into a
+queue; the app drains `takeSoundEvents()` after `update()` and forwards them to
+`platform::playSound()`. The macOS implementation synthesizes short WAV buffers
+(sine/square/saw/noise envelopes) into memory at startup and plays them with
+`NSSound`; other platforms are a no-op. This keeps SFX testable (the logic tests
+assert event emission) and asset-free.
+
 ## Frame lifecycle
 
 ```
@@ -161,9 +223,13 @@ The mesh instance buffer is uploaded directly from `scene::MeshInstance`; a
 ```cpp
 struct FrameConstants {
     Mat4 viewProjection;
-    Vec4 lightDirection;  // xyz used, w is padding
+    Vec4 lightDirection;   // xyz used, w is padding
+    Vec4 cameraPosition;   // xyz used, w = 1
+    Vec4 fogColor;
     f32 ambient;
-    f32 padding[3];       // sizeof == 96, matches MSL alignment
+    f32 fogStart;
+    f32 fogEnd;
+    f32 padding;           // sizeof == 128, matches MSL alignment
 };
 ```
 
@@ -189,10 +255,55 @@ Shader sources come from the device, one program per kind:
 - Lighting: one directional light plus ambient, applied per fragment using the
   world-space normal. Enough to make ~10k cubes readable without a material
   system.
-- Third-person camera: `RpgGame` places the eye on a sphere around
-  `player.position + (0, 1.5, 0)` using yaw/pitch/distance. Mouse right-drag,
-  arrow keys and the scroll wheel drive it; movement is computed relative to the
-  camera yaw. The renderer only receives the resulting `scene::Camera`.
+- Third-person camera (GTA-style): relative mouse motion in pointer-capture
+  mode drives yaw/pitch; arrow keys adjust the same angles and the scroll wheel
+  zooms. The camera orbits a shoulder-offset pivot at the player's head and
+  keeps `cameraDistanceSmoothed_`:
+  - a 2D ray/circle test against every static obstacle shortens the boom
+    immediately when something would occlude the player,
+  - the boom recovers slowly when the obstruction clears,
+  - the ground plane is treated as a constraint, so looking down cannot push the
+    camera below the floor.
+  Movement is camera-relative and the character faces movement/attack direction.
+  The renderer only receives the resulting `scene::Camera`.
+
+## Graphics settings, AA and quality
+
+Graphics settings live in the app (not in gameplay). `F2`/`G` opens an in-game
+panel for:
+
+- **Anti-aliasing:** off / 2x / 4x / 8x MSAA. Backends clamp to
+  `maxMultisampleSamples()`.
+- **Quality:** Low / Medium / High / Ultra. The renderer maps this to a draw
+  distance (CPU instance culling), fog start/end, and upload volume.
+- **FPS cap:** 30–240 or off. The loop sleeps to hit the target after present,
+  which also works alongside vsync.
+- **Vsync:** on/off via `IRenderDevice::setVSync`.
+- **Invert Y.**
+
+The device owns MSAA targets:
+
+- **OpenGL:** a multisampled FBO (RGBA8 + Depth24 renderbuffers) is rendered
+  into and blitted to the default framebuffer before `flushBuffer`.
+- **Metal:** multisampled color/depth textures are the render targets and
+  resolve into the drawable; pipeline states are rebuilt with
+  `rasterSampleCount`.
+
+Changing sample count drains in-flight work (Metal) and rebuilds pipelines
+internally, so renderer resource handles stay valid. `FrameConstants` carries
+camera position and fog parameters; the mesh shader adds Blinn-Phong specular,
+hemisphere ambient tint and distance fog.
+
+## Mouse look and pointer capture
+
+While the game is in `Playing`, the app puts the Cocoa window into relative mouse
+mode (`CGAssociateMouseAndMouseCursorPosition(false)` + hidden cursor). Raw
+`NSEvent.deltaX/deltaY` become `InputState::mouseDelta`; the game applies it to
+camera yaw/pitch. Opening any menu, inventory or graphics panel releases capture
+so the OS cursor is usable again. `INVERT Y` flips the vertical delta.
+
+Because gameplay geometry is deterministic and mouse delta is just another input
+field, pointer capture does not leak into the simulation layer.
 
 ## Presentation and DPI
 
@@ -242,10 +353,11 @@ The pause/death menu is **game state**: `RpgGame` owns `paused`/`dead`, the
 selected option, menu option strings, stats, dialogue text and the quit request.
 It consumes input edges (Escape, W/S, Enter) inside `update()`.
 
-The app owns **presentation**: `appendHud()` and `appendMenu()` read the public
-game state and emit overlay quads/text. That keeps the logic layer free of fonts,
-pixels and HTML-like layout, while still letting the menu be fully tested
-headlessly (toggle, navigation, restart, quit, death screen are all unit-tested).
+The app owns **presentation**: `appendHud()`, `appendInventory()` and
+`appendMenu()` read the public game state and emit overlay quads/text. That keeps
+the logic layer free of fonts, pixels and HTML-like layout, while still letting
+the menu and inventory be fully tested headlessly (toggle, navigation, equip,
+use, restart, quit, death and victory screens are unit-tested).
 
 The FPS overlay is separate: `F1`/`` ` `` toggles it, `--fps` starts it visible,
 frame time is smoothed with an exponential moving average, and it shows `FPS`,
