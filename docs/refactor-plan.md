@@ -137,7 +137,10 @@ phase is meant to be shippable with the game still playable in single-player.
   - Token-bucket rate limits, tick-window/playerId validation, malformed-frame disconnects and respawn guards.
   - Optional shared-secret auth before Welcome/resume tokens; constant-time comparison.
   - TLS, replay protection and kick/ban persistence remain.
-- **A8 — TLS/transport hardening and matchmaking: next.**
+- **A8 — Transport hardening/deployment: A8a ✅.**
+  - TLS terminator scripts/docs, loopback-only `--bind`, TCP keepalive.
+  - Native TLS, matchmaking/NAT/UDP remain.
+- **Next: native TLS or matchmaking/NAT.**
 
 ---
 

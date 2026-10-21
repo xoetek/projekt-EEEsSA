@@ -345,6 +345,11 @@ void testRateLimiter() {
     CHECK(!bucket.consume(10.0));
 }
 
+void testInvalidBindAddress() {
+    eee::net::TcpTransport transport;
+    CHECK(!transport.listenOn("not-an-ip", 27015));
+}
+
 void testTcpLoopback() {
     TcpTransport server;
     if (!server.listen(0)) {
@@ -401,6 +406,7 @@ int main() {
     testMalformedFrames();
     testRateLimiter();
     testAuth();
+    testInvalidBindAddress();
     testTcpLoopback();
     if (gTcpUnavailable) {
         const int status = eee::test::report("net (TCP skipped)");

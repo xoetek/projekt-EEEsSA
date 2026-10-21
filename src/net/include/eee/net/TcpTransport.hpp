@@ -15,6 +15,8 @@ public:
     TcpTransport& operator=(const TcpTransport&) = delete;
 
     bool listen(core::u16 port) override;
+    // Bind to a specific IPv4 address (e.g. 127.0.0.1) instead of INADDR_ANY.
+    bool listenOn(std::string_view address, core::u16 port);
     [[nodiscard]] core::u16 localPort() const override;
 
     [[nodiscard]] std::optional<ConnectionId> accept() override;

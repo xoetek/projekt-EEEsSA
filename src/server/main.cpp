@@ -62,6 +62,7 @@ void printUsage() {
         "\n"
         "Usage: eee_server [options]\n"
         "  --port=<n>       TCP listen port (default 27015)\n"
+        "  --bind=<addr>    Bind address (default 0.0.0.0; use 127.0.0.1 behind TLS)\n"
         "  --password=<pw>  Require this shared secret from clients\n"
         "  --once           Exit after one two-player session\n"
         "  --help           Show this message\n"
@@ -78,6 +79,7 @@ int main(int argc, char** argv) {
     int port = 27015;
     bool once = false;
     std::string password;
+    std::string bindAddress = "0.0.0.0";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
@@ -89,6 +91,8 @@ int main(int argc, char** argv) {
             port = std::atoi(arg.substr(7).c_str());
         } else if (arg.starts_with("--password=")) {
             password = arg.substr(11);
+        } else if (arg.starts_with("--bind=")) {
+            bindAddress = arg.substr(7);
         } else {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
             return 2;
@@ -100,8 +104,8 @@ int main(int argc, char** argv) {
     }
 
     TcpTransport transport;
-    if (!transport.listen(static_cast<eee::core::u16>(port))) {
-        logf(LogLevel::Error, "server: failed to listen on port %d", port);
+    if (!transport.listenOn(bindAddress, static_cast<eee::core::u16>(port))) {
+        logf(LogLevel::Error, "server: failed to listen on %s:%d", bindAddress.c_str(), port);
         return 1;
     }
     const eee::core::u64 expectedAuthToken = eee::net::hashSecret(password);

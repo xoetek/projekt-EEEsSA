@@ -266,8 +266,8 @@ server's 20-second grace window.
 
 Both peers run the deterministic 60 Hz lockstep simulation; each sees its own
 camera and HUD plus the ally HP line. ESC opens a local non-pausing menu
-(Resume/Leave). Classes currently come from `--class`; a full lobby/ready UI and
-co-op inventory are the next polish phase. Single-player is unchanged.
+(Resume/Leave). Classes currently come from `--class`; a full lobby/ready UI is
+the next polish phase. Single-player is unchanged.
 
 ### Dedicated server
 
@@ -283,9 +283,10 @@ co-op inventory are the next polish phase. Single-player is unchanged.
 ./build/eee_demo --join=YOUR_SERVER_HOST:27015 --password=our-secret --class=archer
 ```
 
-`eee_server` is a **dedicated relay with a shadow authoritative simulation**:
-it assigns player IDs, exchanges class choices, sends `StartRun`, relays
-input/checksum frames, and runs the same 60 Hz `RpgGame` from both clients'
+`eee_server` is a **dedicated authoritative server**:
+it assigns player IDs, exchanges class choices, sends `StartRun`, applies
+clients' inputs to an authoritative `RpgGame`, and sends snapshots/ticks.
+It also validates checksums and applies authoritative inventory/action requests. It runs the same 60 Hz `RpgGame` from both clients'
 inputs. Every 30 ticks it compares checksums with clients and aborts on
 divergence. After each tick it sends an authoritative `ServerTick` and a
 `Snapshot` of players/enemies/projectiles/loot. Dedicated-server clients apply
@@ -296,12 +297,13 @@ replicated in snapshots; the co-op inventory UI (`I`, arrows/WASD select,
 Enter equip/use, X drop) operates while the simulation keeps running. Add
 `--once` to exit after one session (used by CTest).
 
-> **A1–A6 are implemented**: the server owns/validates the simulation, releases
+> **A1–A8a are implemented**: the server owns/validates the simulation, releases
 > authoritative ticks, replicates world snapshots, owns inventory/action results,
-> uses deterministic per-zone worlds, and supports respawn plus a 20-second
-> reconnect grace with resume tokens. Dedicated clients stop simulating, render
-> server state, send action requests, predict local movement, and interpolate
-> remote entities. See
+> uses deterministic per-zone worlds, supports respawn plus a 20-second reconnect
+> grace with resume tokens, and includes rate limiting, shared-secret auth,
+> loopback binding and TLS termination tooling. Dedicated clients stop simulating,
+> render server state, send action requests, predict local movement, and
+> interpolate remote entities. Native TLS and matchmaking/NAT remain. See
 > [docs/authoritative-server.md](docs/authoritative-server.md). Do not describe
 > the current relay as a fully authoritative server.
 
@@ -309,11 +311,12 @@ Internet requirements and caveats:
 
 - The server needs a public IP/DNS name and an open TCP port (firewall/security
   group + port forwarding on a home router).
-- The protocol is **plaintext**. Optional shared-secret auth (`--password`) now
-  gates the lobby and is checked in constant time before `Welcome`/resume tokens,
-  and the server applies rate limits, tick-window checks and player-id validation.
-  The shared secret is sent as a fast FNV hash, not TLS-grade cryptography; use a
-  firewall/VPN/TLS terminator for hostile networks. Do not expose it openly as-is.
+- The protocol is **plaintext**. Optional shared-secret auth (`--password`) gates
+  the lobby, and the server applies rate limits, tick-window checks, player-id
+  validation and respawn guards. The shared secret is sent as a fast FNV hash,
+  not TLS-grade cryptography. For hostile networks, use the included TLS
+  terminator (`scripts/tls_proxy.py`, see `docs/tls.md`) or a VPN, bind the game
+  server to loopback (`--bind=127.0.0.1`), and expose only the TLS port.
 - NAT traversal, matchmaking, relay authentication and authoritative server
   simulation are not implemented yet.
 

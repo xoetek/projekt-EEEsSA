@@ -260,9 +260,11 @@ and static world identity.
 - ⏳ TLS and cryptographic authentication are **not** implemented. The protocol is still plaintext; use a firewall/VPN or a TLS terminator before exposing it publicly.
 - ⏳ Kick/ban persistence and replay protection are future work.
 
-### A8 — Matchmaking / NAT
-- Lobby service, server directory, relay fallback.
-- UDP transport if needed.
+### A8 — Transport hardening / deployment (A8a ✅)
+- ✅ Optional TLS termination tooling: `scripts/tls_proxy.py` + `docs/tls.md` (TLS between proxies; game port stays loopback).
+- ✅ Server `--bind` to keep the plaintext game port off public interfaces.
+- ✅ TCP `SO_KEEPALIVE` with a 30s idle threshold.
+- ⏳ Native TLS transport, certificate pinning in-game, matchmaking/server directory, NAT traversal and UDP remain future work.
 
 ---
 

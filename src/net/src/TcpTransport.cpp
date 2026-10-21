@@ -27,6 +27,14 @@ bool setNonBlocking(int fd) {
 void configureSocket(int fd) {
     int yes = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+#if defined(TCP_KEEPALIVE)
+    int keepAlive = 30; // macOS: idle seconds before probes
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepAlive, sizeof(keepAlive));
+#elif defined(TCP_KEEPIDLE)
+    int keepAlive = 30;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepAlive, sizeof(keepAlive));
+#endif
 #if defined(SO_NOSIGPIPE)
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
 #endif
@@ -66,7 +74,9 @@ bool writeAll(int fd, const core::u8* data, core::usize size) {
 TcpTransport::TcpTransport() = default;
 TcpTransport::~TcpTransport() { closeAll(); }
 
-bool TcpTransport::listen(core::u16 port) {
+bool TcpTransport::listen(core::u16 port) { return listenOn("0.0.0.0", port); }
+
+bool TcpTransport::listenOn(std::string_view bindAddress, core::u16 port) {
     closeAll();
     listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listenFd_ < 0) {
@@ -78,8 +88,14 @@ bool TcpTransport::listen(core::u16 port) {
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
     address.sin_port = htons(port);
+    const std::string bindString(bindAddress);
+    if (::inet_pton(AF_INET, bindString.c_str(), &address.sin_addr) != 1) {
+        core::logf(core::LogLevel::Error, "tcp: invalid bind address '%s'",
+                   bindString.c_str());
+        closeAll();
+        return false;
+    }
     if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
         core::logf(core::LogLevel::Error, "tcp: bind failed: %s", std::strerror(errno));
         closeAll();
