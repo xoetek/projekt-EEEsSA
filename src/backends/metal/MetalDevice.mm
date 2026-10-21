@@ -33,11 +33,17 @@ struct Instance {
 struct FrameConstants {
     float4x4 viewProjection;
     float4 lightDirection;
+    float4 cameraPosition;
+    float4 fogColor;
     float ambient;
+    float fogStart;
+    float fogEnd;
+    float padding;
 };
 
 struct VertexOut {
     float4 position [[position]];
+    float3 worldPosition;
     float3 normal;
     float4 color;
 };
@@ -52,18 +58,35 @@ vertex VertexOut vs_main(uint vertexId [[vertex_id]],
     VertexOut result;
     result.position = frame.viewProjection * inst.model *
                       float4(v.position.x, v.position.y, v.position.z, 1.0);
+    result.worldPosition = (inst.model * float4(v.position.x, v.position.y, v.position.z, 1.0)).xyz;
     result.normal =
         (inst.model * float4(v.normal.x, v.normal.y, v.normal.z, 0.0)).xyz;
     result.color = inst.color;
     return result;
 }
 
+float hash13(float3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
 fragment float4 fs_main(VertexOut in [[stage_in]],
                         constant FrameConstants& frame [[buffer(2)]]) {
     float3 n = normalize(in.normal);
-    float ndl = max(dot(n, normalize(-frame.lightDirection.xyz)), 0.0);
-    float3 lit = in.color.rgb * (frame.ambient + (1.0 - frame.ambient) * ndl);
-    return float4(lit, in.color.a);
+    float3 lightDir = normalize(-frame.lightDirection.xyz);
+    float3 viewDir = normalize(frame.cameraPosition.xyz - in.worldPosition);
+    float ndl = max(dot(n, lightDir), 0.0);
+    float3 halfDir = normalize(lightDir + viewDir);
+    float spec = pow(max(dot(n, halfDir), 0.0), 48.0) * 0.28;
+    float3 ambientTint = mix(frame.fogColor.rgb, float3(1.0), 0.45) * (0.72 + 0.28 * max(n.y, 0.0));
+    float grain = hash13(floor(in.worldPosition * 4.0));
+    float stripe = 0.94 + 0.06 * sin(in.worldPosition.y * 24.0 + in.worldPosition.x * 0.7);
+    float3 baseColor = in.color.rgb * (0.86 + 0.24 * grain) * stripe;
+    float3 lit = baseColor * (frame.ambient * ambientTint + (1.0 - frame.ambient) * ndl) + float3(spec);
+    float dist = distance(frame.cameraPosition.xyz, in.worldPosition);
+    float fog = saturate((dist - frame.fogStart) / max(1.0, frame.fogEnd - frame.fogStart));
+    return float4(mix(lit, frame.fogColor.rgb, fog), in.color.a);
 }
 )MSL";
 
@@ -100,6 +123,7 @@ struct PipelineRecord {
     void* state = nullptr;
     bool depthTest = true;
     PipelineKind kind = PipelineKind::Mesh;
+    PipelineDesc desc;
 };
 
 class MetalDevice final : public IRenderDevice {
@@ -129,6 +153,15 @@ public:
 
         semaphore_ = dispatch_semaphore_create(kFramesInFlight);
         inFlightGroup_ = dispatch_group_create();
+
+        maxSamples_ = 1;
+        for (core::u8 samples : {8, 4, 2}) {
+            if ([device_ supportsTextureSampleCount:samples]) {
+                maxSamples_ = samples;
+                break;
+            }
+        }
+        samples_ = 1;
 
         layer_ = [CAMetalLayer layer];
         layer_.device = device_;
@@ -206,6 +239,8 @@ public:
         pipelines_.clear();
 
         depthTexture_ = nil;
+        msaaColor_ = nil;
+        msaaDepth_ = nil;
         depthTestState_ = nil;
         noDepthTestState_ = nil;
 
@@ -243,8 +278,40 @@ public:
         core::logf(core::LogLevel::Info, "metal: vsync %s", enabled ? "on" : "off");
     }
 
+    void setMultisampleSamples(core::u8 samples) override {
+        const core::u8 clamped = samples <= 1 ? 1 : std::min(samples, maxSamples_);
+        if (clamped == samples_) {
+            return;
+        }
+        waitIdle();
+        samples_ = clamped;
+
+        for (PipelineRecord& record : pipelines_) {
+            if (record.state == nullptr) {
+                continue;
+            }
+            id<MTLRenderPipelineState> fresh = buildPipelineState(record.desc);
+            if (fresh != nil) {
+                if (record.state != nullptr) {
+                    id<MTLRenderPipelineState> old =
+                        (__bridge_transfer id<MTLRenderPipelineState>)record.state;
+                    (void)old;
+                }
+                record.state = (__bridge_retained void*)fresh;
+            }
+        }
+        createDepthTexture();
+        core::logf(core::LogLevel::Info, "metal: MSAA %s",
+                   samples_ <= 1 ? "off" : std::to_string(samples_).c_str());
+    }
+
+    [[nodiscard]] core::u8 multisampleSamples() const override { return samples_; }
+    [[nodiscard]] core::u8 maxMultisampleSamples() const override { return maxSamples_; }
+
     void beginFrame(const FrameDesc& desc) override {
-        if (layer_ == nil || queue_ == nil || depthTexture_ == nil || semaphore_ == nil) {
+        const bool hasDepth =
+            depthTexture_ != nil || (msaaColor_ != nil && msaaDepth_ != nil);
+        if (layer_ == nil || queue_ == nil || !hasDepth || semaphore_ == nil) {
             return;
         }
 
@@ -258,14 +325,20 @@ public:
         }
 
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture = drawable_.texture;
+        if (samples_ > 1 && msaaColor_ != nil) {
+            pass.colorAttachments[0].texture = msaaColor_;
+            pass.colorAttachments[0].resolveTexture = drawable_.texture;
+            pass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+        } else {
+            pass.colorAttachments[0].texture = drawable_.texture;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        }
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         pass.colorAttachments[0].clearColor = MTLClearColor{
             static_cast<double>(desc.clearColor.x), static_cast<double>(desc.clearColor.y),
             static_cast<double>(desc.clearColor.z), static_cast<double>(desc.clearColor.w)};
 
-        pass.depthAttachment.texture = depthTexture_;
+        pass.depthAttachment.texture = samples_ > 1 ? msaaDepth_ : depthTexture_;
         pass.depthAttachment.loadAction = MTLLoadActionClear;
         pass.depthAttachment.storeAction = MTLStoreActionDontCare;
         pass.depthAttachment.clearDepth = 1.0;
@@ -370,52 +443,17 @@ public:
         if (device_ == nil) {
             return kInvalidPipeline;
         }
-
-        @autoreleasepool {
-            NSError* error = nil;
-            id<MTLLibrary> library =
-                [device_ newLibraryWithSource:[NSString stringWithUTF8String:desc.shaders.vertex.c_str()]
-                                      options:nil
-                                        error:&error];
-            if (library == nil) {
-                core::logf(core::LogLevel::Error, "metal: shader compilation failed: %s",
-                           error != nil ? error.localizedDescription.UTF8String : "unknown");
-                return kInvalidPipeline;
-            }
-
-            const bool mesh = desc.kind == PipelineKind::Mesh;
-            MTLRenderPipelineDescriptor* pipelineDesc =
-                [[MTLRenderPipelineDescriptor alloc] init];
-            pipelineDesc.label = mesh ? @"mesh" : @"overlay";
-            pipelineDesc.vertexFunction =
-                [library newFunctionWithName:mesh ? @"vs_main" : @"overlay_vs"];
-            pipelineDesc.fragmentFunction =
-                [library newFunctionWithName:mesh ? @"fs_main" : @"overlay_fs"];
-            pipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-            pipelineDesc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-
-            if (desc.alphaBlend) {
-                MTLRenderPipelineColorAttachmentDescriptor* attachment =
-                    pipelineDesc.colorAttachments[0];
-                attachment.blendingEnabled = YES;
-                attachment.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-                attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-                attachment.sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
-                attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-            }
-
-            id<MTLRenderPipelineState> state =
-                [device_ newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
-            if (state == nil) {
-                core::logf(core::LogLevel::Error, "metal: pipeline creation failed: %s",
-                           error != nil ? error.localizedDescription.UTF8String : "unknown");
-                return kInvalidPipeline;
-            }
-
-            pipelines_.push_back(
-                PipelineRecord{(__bridge_retained void*)state, desc.depthTest, desc.kind});
-            return static_cast<PipelineHandle>(pipelines_.size());
+        id<MTLRenderPipelineState> state = buildPipelineState(desc);
+        if (state == nil) {
+            return kInvalidPipeline;
         }
+        PipelineRecord record;
+        record.state = (__bridge_retained void*)state;
+        record.depthTest = desc.depthTest;
+        record.kind = desc.kind;
+        record.desc = desc;
+        pipelines_.push_back(std::move(record));
+        return static_cast<PipelineHandle>(pipelines_.size());
     }
 
     void destroyPipeline(PipelineHandle handle) override {
@@ -495,6 +533,54 @@ public:
     }
 
 private:
+    id<MTLRenderPipelineState> buildPipelineState(const PipelineDesc& desc) {
+        if (device_ == nil) {
+            return nil;
+        }
+        @autoreleasepool {
+            NSError* error = nil;
+            id<MTLLibrary> library =
+                [device_ newLibraryWithSource:[NSString stringWithUTF8String:desc.shaders.vertex.c_str()]
+                                      options:nil
+                                        error:&error];
+            if (library == nil) {
+                core::logf(core::LogLevel::Error, "metal: shader compilation failed: %s",
+                           error != nil ? error.localizedDescription.UTF8String : "unknown");
+                return nil;
+            }
+
+            const bool mesh = desc.kind == PipelineKind::Mesh;
+            MTLRenderPipelineDescriptor* pipelineDesc =
+                [[MTLRenderPipelineDescriptor alloc] init];
+            pipelineDesc.label = mesh ? @"mesh" : @"overlay";
+            pipelineDesc.vertexFunction =
+                [library newFunctionWithName:mesh ? @"vs_main" : @"overlay_vs"];
+            pipelineDesc.fragmentFunction =
+                [library newFunctionWithName:mesh ? @"fs_main" : @"overlay_fs"];
+            pipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+            pipelineDesc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+            pipelineDesc.rasterSampleCount = samples_;
+
+            if (desc.alphaBlend) {
+                MTLRenderPipelineColorAttachmentDescriptor* attachment =
+                    pipelineDesc.colorAttachments[0];
+                attachment.blendingEnabled = YES;
+                attachment.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+                attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+                attachment.sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+                attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+            }
+
+            id<MTLRenderPipelineState> state =
+                [device_ newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
+            if (state == nil) {
+                core::logf(core::LogLevel::Error, "metal: pipeline creation failed: %s",
+                           error != nil ? error.localizedDescription.UTF8String : "unknown");
+            }
+            return state;
+        }
+    }
+
     void createDepthStencilStates() {
         MTLDepthStencilDescriptor* descriptor = [[MTLDepthStencilDescriptor alloc] init];
         descriptor.depthCompareFunction = MTLCompareFunctionLess;
@@ -508,17 +594,45 @@ private:
 
     void createDepthTexture() {
         depthTexture_ = nil;
+        msaaColor_ = nil;
+        msaaDepth_ = nil;
         if (device_ == nil) {
             return;
         }
-        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor
+
+        if (samples_ <= 1) {
+            MTLTextureDescriptor* descriptor = [MTLTextureDescriptor
+                texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                             width:static_cast<NSUInteger>(width_)
+                                            height:static_cast<NSUInteger>(height_)
+                                         mipmapped:NO];
+            descriptor.usage = MTLTextureUsageRenderTarget;
+            descriptor.storageMode = MTLStorageModePrivate;
+            depthTexture_ = [device_ newTextureWithDescriptor:descriptor];
+            return;
+        }
+
+        MTLTextureDescriptor* color = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                         width:static_cast<NSUInteger>(width_)
+                                        height:static_cast<NSUInteger>(height_)
+                                     mipmapped:NO];
+        color.textureType = MTLTextureType2DMultisample;
+        color.sampleCount = samples_;
+        color.usage = MTLTextureUsageRenderTarget;
+        color.storageMode = MTLStorageModePrivate;
+        msaaColor_ = [device_ newTextureWithDescriptor:color];
+
+        MTLTextureDescriptor* depth = [MTLTextureDescriptor
             texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                          width:static_cast<NSUInteger>(width_)
                                         height:static_cast<NSUInteger>(height_)
                                      mipmapped:NO];
-        descriptor.usage = MTLTextureUsageRenderTarget;
-        descriptor.storageMode = MTLStorageModePrivate;
-        depthTexture_ = [device_ newTextureWithDescriptor:descriptor];
+        depth.textureType = MTLTextureType2DMultisample;
+        depth.sampleCount = samples_;
+        depth.usage = MTLTextureUsageRenderTarget;
+        depth.storageMode = MTLStorageModePrivate;
+        msaaDepth_ = [device_ newTextureWithDescriptor:depth];
     }
 
     [[nodiscard]] id<MTLBuffer> lookupBuffer(BufferHandle handle) const {
@@ -542,6 +656,8 @@ private:
     id<MTLRenderPipelineState> __strong currentPipeline_ = nil;
 
     id<MTLTexture> __strong depthTexture_ = nil;
+    id<MTLTexture> __strong msaaColor_ = nil;
+    id<MTLTexture> __strong msaaDepth_ = nil;
     id<MTLDepthStencilState> __strong depthTestState_ = nil;
     id<MTLDepthStencilState> __strong noDepthTestState_ = nil;
 
@@ -553,6 +669,8 @@ private:
 
     core::i32 width_ = 1;
     core::i32 height_ = 1;
+    core::u8 samples_ = 1;
+    core::u8 maxSamples_ = 1;
     bool vsync_ = true;
     core::u64 frameIndex_ = 0;
     core::u64 drawCalls_ = 0;
@@ -561,7 +679,7 @@ private:
     bool ready_ = false;
 };
 
-static_assert(sizeof(FrameConstants) == 96, "FrameConstants must match the MSL layout");
+static_assert(sizeof(FrameConstants) == 128, "FrameConstants must match the MSL layout");
 
 } // namespace
 

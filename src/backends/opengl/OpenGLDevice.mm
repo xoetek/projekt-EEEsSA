@@ -24,11 +24,13 @@ layout(location = 2) in mat4 aModel;
 layout(location = 6) in vec4 aColor;
 uniform mat4 uViewProjection;
 out vec3 vNormal;
+out vec3 vWorldPos;
 out vec4 vColor;
 void main() {
     vec4 world = aModel * vec4(aPosition, 1.0);
     gl_Position = uViewProjection * world;
     vNormal = mat3(aModel) * aNormal;
+    vWorldPos = world.xyz;
     vColor = aColor;
 }
 )GLSL";
@@ -36,14 +38,34 @@ void main() {
 const char* kMeshFragmentShader = R"GLSL(
 #version 410 core
 in vec3 vNormal;
+in vec3 vWorldPos;
 in vec4 vColor;
 out vec4 fColor;
 uniform vec3 uLightDirection;
+uniform vec3 uCameraPosition;
+uniform vec3 uFogColor;
 uniform float uAmbient;
+uniform float uFogStart;
+uniform float uFogEnd;
+float hash13(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
 void main() {
     vec3 n = normalize(vNormal);
-    float ndl = max(dot(n, normalize(-uLightDirection)), 0.0);
-    fColor = vec4(vColor.rgb * (uAmbient + (1.0 - uAmbient) * ndl), vColor.a);
+    vec3 lightDir = normalize(-uLightDirection);
+    vec3 viewDir = normalize(uCameraPosition - vWorldPos);
+    float ndl = max(dot(n, lightDir), 0.0);
+    float spec = pow(max(dot(n, normalize(lightDir + viewDir)), 0.0), 48.0) * 0.28;
+    vec3 ambientTint = mix(uFogColor, vec3(1.0), 0.45) * (0.72 + 0.28 * max(n.y, 0.0));
+    float grain = hash13(floor(vWorldPos * 4.0));
+    float stripe = 0.94 + 0.06 * sin(vWorldPos.y * 24.0 + vWorldPos.x * 0.7);
+    vec3 baseColor = vColor.rgb * (0.86 + 0.24 * grain) * stripe;
+    vec3 lit = baseColor * (uAmbient * ambientTint + (1.0 - uAmbient) * ndl) + vec3(spec);
+    float dist = distance(uCameraPosition, vWorldPos);
+    float fog = clamp((dist - uFogStart) / max(1.0, uFogEnd - uFogStart), 0.0, 1.0);
+    fColor = vec4(mix(lit, uFogColor, fog), vColor.a);
 }
 )GLSL";
 
@@ -135,6 +157,10 @@ public:
         [context_ makeCurrentContext];
         setVSync(true);
 
+        GLint maxSamples = 1;
+        glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+        maxSamples_ = static_cast<core::u8>(core::clamp(static_cast<core::i32>(maxSamples), 1, 8));
+
         const GLubyte* version = glGetString(GL_VERSION);
         const GLubyte* renderer = glGetString(GL_RENDERER);
         core::logf(core::LogLevel::Info, "opengl: %s (%s)",
@@ -181,6 +207,7 @@ public:
             glDeleteVertexArrays(1, &vao_);
             vao_ = 0;
         }
+        destroyTargets();
 
         currentProgram_ = 0;
         [NSOpenGLContext clearCurrentContext];
@@ -196,8 +223,29 @@ public:
             [context_ makeCurrentContext];
             [context_ update];
             glViewport(0, 0, width_, height_);
+            if (samples_ > 1) {
+                createTargets();
+            }
         }
     }
+
+    void setMultisampleSamples(core::u8 samples) override {
+        const core::u8 clamped =
+            samples <= 1 ? 1 : std::min(samples, maxMultisampleSamples());
+        if (clamped == samples_) {
+            return;
+        }
+        samples_ = clamped;
+        if (context_ != nil) {
+            [context_ makeCurrentContext];
+            createTargets();
+        }
+        core::logf(core::LogLevel::Info, "opengl: MSAA %s",
+                   samples_ <= 1 ? "off" : std::to_string(samples_).c_str());
+    }
+
+    [[nodiscard]] core::u8 multisampleSamples() const override { return samples_; }
+    [[nodiscard]] core::u8 maxMultisampleSamples() const override { return maxSamples_; }
 
     void setVSync(bool enabled) override {
         vsync_ = enabled;
@@ -214,6 +262,7 @@ public:
             return;
         }
         [context_ makeCurrentContext];
+        glBindFramebuffer(GL_FRAMEBUFFER, samples_ > 1 ? fbo_ : 0);
         glViewport(0, 0, width_, height_);
         glClearColor(desc.clearColor.x, desc.clearColor.y, desc.clearColor.z, desc.clearColor.w);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -221,6 +270,13 @@ public:
 
     void endFrame() override {
         if (context_ != nil) {
+            if (samples_ > 1 && fbo_ != 0) {
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                glBlitFramebuffer(0, 0, width_, height_, 0, 0, width_, height_,
+                                  GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            }
             [context_ flushBuffer];
         }
     }
@@ -353,6 +409,23 @@ public:
         if (ambient >= 0) {
             glUniform1f(ambient, constants.ambient);
         }
+        const GLint cameraPosition = glGetUniformLocation(currentProgram_, "uCameraPosition");
+        if (cameraPosition >= 0) {
+            glUniform3f(cameraPosition, constants.cameraPosition.x, constants.cameraPosition.y,
+                        constants.cameraPosition.z);
+        }
+        const GLint fogColor = glGetUniformLocation(currentProgram_, "uFogColor");
+        if (fogColor >= 0) {
+            glUniform3f(fogColor, constants.fogColor.x, constants.fogColor.y, constants.fogColor.z);
+        }
+        const GLint fogStart = glGetUniformLocation(currentProgram_, "uFogStart");
+        if (fogStart >= 0) {
+            glUniform1f(fogStart, constants.fogStart);
+        }
+        const GLint fogEnd = glGetUniformLocation(currentProgram_, "uFogEnd");
+        if (fogEnd >= 0) {
+            glUniform1f(fogEnd, constants.fogEnd);
+        }
     }
 
     void bindVertexBuffer(BufferHandle handle, core::u32 stride) override {
@@ -426,6 +499,51 @@ public:
     }
 
 private:
+    void destroyTargets() {
+        if (depthRbo_ != 0) {
+            glDeleteRenderbuffers(1, &depthRbo_);
+            depthRbo_ = 0;
+        }
+        if (colorRbo_ != 0) {
+            glDeleteRenderbuffers(1, &colorRbo_);
+            colorRbo_ = 0;
+        }
+        if (fbo_ != 0) {
+            glDeleteFramebuffers(1, &fbo_);
+            fbo_ = 0;
+        }
+    }
+
+    void createTargets() {
+        destroyTargets();
+        if (samples_ <= 1) {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            return;
+        }
+
+        glGenFramebuffers(1, &fbo_);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+
+        glGenRenderbuffers(1, &colorRbo_);
+        glBindRenderbuffer(GL_RENDERBUFFER, colorRbo_);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples_, GL_RGBA8, width_, height_);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colorRbo_);
+
+        glGenRenderbuffers(1, &depthRbo_);
+        glBindRenderbuffer(GL_RENDERBUFFER, depthRbo_);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples_, GL_DEPTH_COMPONENT24, width_,
+                                         height_);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRbo_);
+
+        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            core::logError("opengl: multisample framebuffer incomplete, falling back to 0x MSAA");
+            samples_ = 1;
+            destroyTargets();
+        }
+    }
+
     BufferHandle storeBuffer(GLuint buffer) {
         for (core::usize i = 0; i < buffers_.size(); ++i) {
             if (buffers_[i] == 0) {
@@ -462,6 +580,11 @@ private:
     PipelineKind currentKind_ = PipelineKind::Mesh;
     core::i32 width_ = 1;
     core::i32 height_ = 1;
+    GLuint fbo_ = 0;
+    GLuint colorRbo_ = 0;
+    GLuint depthRbo_ = 0;
+    core::u8 samples_ = 1;
+    core::u8 maxSamples_ = 1;
     bool vsync_ = true;
     core::u64 drawCalls_ = 0;
     std::vector<GLuint> buffers_;

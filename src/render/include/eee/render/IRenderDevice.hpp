@@ -20,6 +20,8 @@ enum class BufferUsage { Vertex, Index, Instance };
 // to configure the right vertex layout and depth state.
 enum class PipelineKind { Mesh, Overlay };
 
+enum class QualityLevel : core::u8 { Low, Medium, High, Ultra };
+
 struct DeviceInitDesc {
     platform::NativeWindow window{};
     core::i32 width = 0;
@@ -32,10 +34,14 @@ struct FrameDesc {
 
 struct FrameConstants {
     core::Mat4 viewProjection = core::Mat4::identity();
-    // xyz = direction the light travels; w is padding for MSL alignment.
+    // xyz = direction the light travels; w is padding.
     core::Vec4 lightDirection{-0.45f, -1.0f, -0.35f, 0.0f};
+    core::Vec4 cameraPosition{0.0f, 0.0f, 0.0f, 1.0f};
+    core::Vec4 fogColor{0.45f, 0.62f, 0.86f, 1.0f};
     core::f32 ambient = 0.16f;
-    core::f32 padding[3]{};
+    core::f32 fogStart = 45.0f;
+    core::f32 fogEnd = 120.0f;
+    core::f32 padding = 0.0f;
 };
 
 // Shaders are authored in the backend's native language (GLSL for OpenGL,
@@ -80,6 +86,12 @@ public:
     // Toggle presentation sync with the display refresh. Backends apply this
     // at the next frame; APIs that need swapchain recreation do it internally.
     virtual void setVSync(bool enabled) = 0;
+
+    // Multisample anti-aliasing. 0 or 1 disables it. Backends recreate their
+    // swapchain targets and pipelines internally; resource handles stay valid.
+    virtual void setMultisampleSamples(core::u8 samples) = 0;
+    [[nodiscard]] virtual core::u8 multisampleSamples() const = 0;
+    [[nodiscard]] virtual core::u8 maxMultisampleSamples() const = 0;
 
     virtual void beginFrame(const FrameDesc& desc) = 0;
     virtual void endFrame() = 0;

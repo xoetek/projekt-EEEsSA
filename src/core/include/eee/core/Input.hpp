@@ -24,6 +24,7 @@ enum class Key : u16 {
     LeftShift,
     RightShift,
     F1,
+    F2,
     Count
 };
 
@@ -37,6 +38,9 @@ struct InputState {
     std::array<bool, kKeyCount> released{};
 
     Vec2 mousePosition{};
+    Vec2 mouseDelta{}; // relative motion while the pointer is captured
+    Vec2 viewportSize{}; // framebuffer pixels, set by the host each frame
+    bool mouseCaptured = false;
     std::array<bool, 3> mouseDown{};
     std::array<bool, 3> mousePressed{};
     f32 scrollDelta = 0.0f;
@@ -83,6 +87,7 @@ struct InputState {
         released.fill(false);
         mousePressed.fill(false);
         scrollDelta = 0.0f;
+        mouseDelta = {};
     }
 };
 

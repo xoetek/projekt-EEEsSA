@@ -1,3 +1,4 @@
+#import <ApplicationServices/ApplicationServices.h>
 #import <Cocoa/Cocoa.h>
 
 #include "eee/core/Log.hpp"
@@ -18,6 +19,12 @@ void updateMousePosition(InputState* input, NSEvent* event, NSView* view) {
     const NSPoint point = [view convertPoint:event.locationInWindow fromView:nil];
     input->mousePosition = {static_cast<float>(point.x),
                             static_cast<float>(view.bounds.size.height - point.y)};
+
+    if (input->mouseCaptured) {
+        // NSEvent deltaY grows downwards; expose +Y as "mouse moved up".
+        input->mouseDelta.x += static_cast<float>(event.deltaX);
+        input->mouseDelta.y -= static_cast<float>(event.deltaY);
+    }
 }
 
 void applyKey(InputState* input, NSEvent* event, bool isDown) {
@@ -56,6 +63,7 @@ void applyKey(InputState* input, NSEvent* event, bool isDown) {
     case 56: input->setKey(Key::LeftShift, isDown); break;
     case 60: input->setKey(Key::RightShift, isDown); break;
     case 122: input->setKey(Key::F1, isDown); break;
+    case 120: input->setKey(Key::F2, isDown); break;
     default: break;
     }
 }
@@ -188,6 +196,11 @@ public:
         if (view_ != nil) {
             view_.inputState = nullptr;
         }
+        if (captured_) {
+            captured_ = false;
+            CGAssociateMouseAndMouseCursorPosition(true);
+            [NSCursor unhide];
+        }
         if (window_ != nil) {
             window_.delegate = nil;
             [window_ close];
@@ -203,6 +216,7 @@ public:
 
     bool pollEvents(InputState& input) override {
         view_.inputState = &input;
+        input.mouseCaptured = captured_;
 
         @autoreleasepool {
             NSEvent* event = nil;
@@ -225,6 +239,20 @@ public:
 
     [[nodiscard]] NativeWindow native() const override {
         return {(__bridge void*)window_, (__bridge void*)view_};
+    }
+
+    void setMouseCapture(bool captured) override {
+        if (captured == captured_) {
+            return;
+        }
+        captured_ = captured;
+        if (captured_) {
+            [NSCursor hide];
+            CGAssociateMouseAndMouseCursorPosition(false);
+        } else {
+            CGAssociateMouseAndMouseCursorPosition(true);
+            [NSCursor unhide];
+        }
     }
 
     void requestClose() override { windowDelegate_.closeRequested = YES; }
@@ -287,6 +315,7 @@ private:
     EEEAppDelegate* __strong appDelegate_ = nil;
     mutable core::i32 width_ = 0;
     mutable core::i32 height_ = 0;
+    bool captured_ = false;
 };
 
 } // namespace

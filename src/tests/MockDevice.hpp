@@ -60,6 +60,13 @@ public:
         ++vsyncCalls;
     }
 
+    void setMultisampleSamples(eee::core::u8 samples) override {
+        samples = samples <= 1 ? 1 : samples;
+        ++multisampleCalls;
+    }
+    [[nodiscard]] eee::core::u8 multisampleSamples() const override { return samples; }
+    [[nodiscard]] eee::core::u8 maxMultisampleSamples() const override { return 8; }
+
     void beginFrame(const eee::render::FrameDesc& desc) override {
         clearColor = desc.clearColor;
         ++beginFrames;
@@ -200,6 +207,7 @@ public:
     eee::render::DeviceInitDesc initDesc{};
     bool initializeSucceeds = true;
     bool vsync = true;
+    eee::core::u8 samples = 1;
     eee::core::Vec4 clearColor{};
     eee::render::FrameConstants constants{};
     eee::core::i32 width_ = 0;
@@ -216,6 +224,7 @@ public:
     eee::core::u32 shutdownCalls = 0;
     eee::core::u32 resizeCalls = 0;
     eee::core::u32 vsyncCalls = 0;
+    eee::core::u32 multisampleCalls = 0;
     eee::core::u32 beginFrames = 0;
     eee::core::u32 endFrames = 0;
     eee::core::u32 waitIdleCalls = 0;

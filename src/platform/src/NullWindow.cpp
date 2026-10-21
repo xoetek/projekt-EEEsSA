@@ -17,6 +17,8 @@ public:
 
     [[nodiscard]] NativeWindow native() const override { return {}; }
 
+    void setMouseCapture(bool /*captured*/) override {}
+
     void requestClose() override { closeRequested_ = true; }
     [[nodiscard]] bool shouldClose() const override { return closeRequested_; }
     void setTitle(const char* title) override { title_ = title; }

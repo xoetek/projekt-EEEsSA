@@ -254,6 +254,30 @@ void testFrameSlotRotation() {
     CHECK(handles[3] == handles[0]); // three frames in flight, then reuse
 }
 
+void testQualityCulling() {
+    eee::test::MockDevice mock;
+    eee::render::Renderer renderer(mock);
+    CHECK(renderer.initialize());
+
+    scene::SceneSnapshot snapshot = makeSnapshot(3, 0);
+    scene::MeshInstance far;
+    far.transform = core::Mat4::translation({200.0f, 0.0f, 0.0f});
+    far.color = core::Vec4::rgb(1.0f, 1.0f, 1.0f);
+    snapshot.meshes.push_back(far);
+
+    renderer.setQuality(eee::render::QualityLevel::Low);
+    renderer.renderFrame(snapshot);
+    CHECK(mock.draws.size() == 1);
+    CHECK(mock.draws[0].instanceCount == 3); // far cube culled
+    CHECK(eee::test::nearlyEqual(mock.constants.fogStart, 14.0f));
+    CHECK(eee::test::nearlyEqual(mock.constants.fogEnd, 46.0f));
+
+    renderer.setQuality(eee::render::QualityLevel::Ultra);
+    renderer.renderFrame(snapshot);
+    CHECK(mock.draws.size() == 2);
+    CHECK(mock.draws[1].instanceCount == 4); // no distance culling
+}
+
 void testEmptySnapshot() {
     eee::test::MockDevice mock;
     eee::render::Renderer renderer(mock);
@@ -315,6 +339,7 @@ int main() {
     testMeshPass();
     testOverlayPass();
     testFrameSlotRotation();
+    testQualityCulling();
     testEmptySnapshot();
     testCapacityGrowth();
     testUninitializedRenderer();

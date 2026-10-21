@@ -30,6 +30,8 @@ public:
     void shutdown();
 
     void resize(core::i32 width, core::i32 height);
+    void setQuality(QualityLevel quality);
+    [[nodiscard]] QualityLevel quality() const { return quality_; }
 
     void renderFrame(const scene::SceneSnapshot& snapshot);
 
@@ -64,6 +66,7 @@ private:
     PipelineHandle overlayPipeline_ = kInvalidPipeline;
 
     std::vector<GpuInstance> overlayScratch_;
+    std::vector<GpuInstance> meshScratch_;
 
     core::u32 meshCapacity_ = 0;
     core::u32 overlayCapacity_ = 0;
@@ -73,6 +76,10 @@ private:
     core::i32 width_ = 1;
     core::i32 height_ = 1;
     bool initialized_ = false;
+    QualityLevel quality_ = QualityLevel::Ultra;
+    core::f32 drawDistance_ = 0.0f;
+    core::f32 fogStart_ = 70.0f;
+    core::f32 fogEnd_ = 220.0f;
 };
 
 } // namespace eee::render

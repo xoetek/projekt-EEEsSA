@@ -34,6 +34,12 @@ public:
         core::logf(core::LogLevel::Info, "null: vsync %s", enabled ? "on" : "off");
     }
 
+    void setMultisampleSamples(core::u8 samples) override {
+        samples_ = samples <= 1 ? 1 : samples;
+    }
+    [[nodiscard]] core::u8 multisampleSamples() const override { return samples_; }
+    [[nodiscard]] core::u8 maxMultisampleSamples() const override { return 8; }
+
     void beginFrame(const FrameDesc& desc) override {
         lastClearColor_ = desc.clearColor;
         inFrame_ = true;
@@ -154,6 +160,7 @@ private:
     core::i32 width_ = 0;
     core::i32 height_ = 0;
     bool vsync_ = true;
+    core::u8 samples_ = 1;
     bool inFrame_ = false;
     bool depthEnabled_ = true;
     core::u64 frameIndex_ = 0;

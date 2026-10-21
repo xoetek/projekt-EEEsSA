@@ -169,9 +169,36 @@ void Renderer::shutdown() {
     meshCapacity_ = 0;
     overlayCapacity_ = 0;
     overlayScratch_.clear();
+    meshScratch_.clear();
     lastMeshCount_ = 0;
     lastOverlayCount_ = 0;
     initialized_ = false;
+}
+
+void Renderer::setQuality(QualityLevel quality) {
+    quality_ = quality;
+    switch (quality) {
+    case QualityLevel::Low:
+        drawDistance_ = 38.0f;
+        fogStart_ = 14.0f;
+        fogEnd_ = 46.0f;
+        break;
+    case QualityLevel::Medium:
+        drawDistance_ = 62.0f;
+        fogStart_ = 26.0f;
+        fogEnd_ = 78.0f;
+        break;
+    case QualityLevel::High:
+        drawDistance_ = 98.0f;
+        fogStart_ = 44.0f;
+        fogEnd_ = 125.0f;
+        break;
+    case QualityLevel::Ultra:
+        drawDistance_ = 0.0f;
+        fogStart_ = 70.0f;
+        fogEnd_ = 220.0f;
+        break;
+    }
 }
 
 void Renderer::resize(core::i32 width, core::i32 height) {
@@ -239,8 +266,24 @@ void Renderer::renderFrame(const scene::SceneSnapshot& snapshot) {
     }
 
     const core::u32 slot = frameSlot();
-    const auto meshCount = static_cast<core::u32>(snapshot.meshes.size());
     const auto overlayCount = static_cast<core::u32>(snapshot.overlay.size());
+
+    const void* meshData = snapshot.meshes.data();
+    core::u32 meshCount = static_cast<core::u32>(snapshot.meshes.size());
+    if (drawDistance_ > 0.0f) {
+        const core::f32 maxDistanceSq = drawDistance_ * drawDistance_;
+        meshScratch_.clear();
+        meshScratch_.reserve(snapshot.meshes.size());
+        for (const scene::MeshInstance& instance : snapshot.meshes) {
+            const core::Vec3 delta = transformPoint(instance.transform, {0.0f, 0.0f, 0.0f}) -
+                                     snapshot.camera.position;
+            if (delta.lengthSquared() <= maxDistanceSq) {
+                meshScratch_.push_back(GpuInstance{instance.transform, instance.color});
+            }
+        }
+        meshData = meshScratch_.data();
+        meshCount = static_cast<core::u32>(meshScratch_.size());
+    }
 
     if (!ensureMeshCapacity(std::max(meshCount, 1u)) ||
         !ensureOverlayCapacity(std::max(overlayCount, 1u))) {
@@ -264,11 +307,15 @@ void Renderer::renderFrame(const scene::SceneSnapshot& snapshot) {
         constants.viewProjection = projection * view;
         constants.lightDirection = {snapshot.lightDirection.x, snapshot.lightDirection.y,
                                     snapshot.lightDirection.z, 0.0f};
+        constants.cameraPosition = {camera.position.x, camera.position.y, camera.position.z, 1.0f};
+        constants.fogColor = snapshot.clearColor;
+        constants.fogStart = fogStart_;
+        constants.fogEnd = fogEnd_;
         constants.ambient = snapshot.ambient;
 
         device_.bindPipeline(meshPipeline_);
         device_.setFrameConstants(constants);
-        device_.updateBuffer(meshInstanceBuffers_[slot], snapshot.meshes.data(),
+        device_.updateBuffer(meshInstanceBuffers_[slot], meshData,
                              static_cast<core::usize>(meshCount) * sizeof(scene::MeshInstance));
         device_.bindVertexBuffer(meshVertexBuffer_, kMeshVertexStride);
         device_.bindInstanceBuffer(meshInstanceBuffers_[slot], sizeof(GpuInstance));

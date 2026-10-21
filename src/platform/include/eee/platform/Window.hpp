@@ -34,6 +34,10 @@ public:
 
     [[nodiscard]] virtual NativeWindow native() const = 0;
 
+    // Relative mouse mode (pointer lock). While captured the cursor is hidden
+    // and motion is delivered through InputState::mouseDelta.
+    virtual void setMouseCapture(bool captured) = 0;
+
     virtual void requestClose() = 0;
     [[nodiscard]] virtual bool shouldClose() const = 0;
     virtual void setTitle(const char* title) = 0;
