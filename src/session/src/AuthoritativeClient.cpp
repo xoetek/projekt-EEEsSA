@@ -1,0 +1,218 @@
+#include "eee/session/AuthoritativeClient.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+namespace eee::session {
+namespace {
+
+constexpr core::f32 kPredictionStep = 1.0f / 60.0f;
+constexpr core::f32 kMaxPredictionFrame = 0.1f;
+constexpr core::f32 kSmoothingDecay = 10.0f;
+constexpr core::usize kMaxReplayedInputs = 128;
+constexpr core::usize kMaxSentInputs = 256;
+constexpr core::f32 kInterpolationStep = 1.0f / 60.0f;
+
+} // namespace
+
+AuthoritativeClient::AuthoritativeClient(net::ITransport& transport,
+                                         net::ConnectionId connection,
+                                         core::PlayerId localPlayer,
+                                         core::u32 inputDelay)
+    : transport_(transport),
+      connection_(connection),
+      localPlayer_(localPlayer),
+      inputDelay_(std::max(inputDelay, core::u32{1})) {}
+
+void AuthoritativeClient::sendInput(const core::PlayerInput& input) {
+    if (disconnected_) return;
+    const core::u64 target = serverTick_ + inputDelay_;
+    if (target <= lastSentTick_) return;
+
+    net::Message message;
+    message.type = net::MessageType::InputCommand;
+    message.payload = net::InputCommand{static_cast<core::u8>(localPlayer_), target, input};
+    if (!transport_.send(connection_, net::encode(message))) {
+        disconnected_ = true;
+        return;
+    }
+    lastSentTick_ = target;
+    if (sentInputs_.size() >= kMaxSentInputs) {
+        sentInputs_.pop_front();
+    }
+    sentInputs_.push_back(SentInput{target, input});
+}
+
+void AuthoritativeClient::sendAction(core::u8 action, core::u16 index) {
+    if (disconnected_) return;
+    net::Message message;
+    message.type = net::MessageType::ActionRequest;
+    message.payload = net::ActionRequest{static_cast<core::u8>(localPlayer_), action, index};
+    if (!transport_.send(connection_, net::encode(message))) {
+        disconnected_ = true;
+    }
+}
+
+core::u32 AuthoritativeClient::poll(logic::RpgGame& game) {
+    if (disconnected_) return 0;
+    core::u32 applied = 0;
+    while (true) {
+        auto bytes = transport_.receive(connection_);
+        if (!bytes.has_value()) break;
+        net::Message message;
+        if (!net::decode(*bytes, message)) {
+            disconnected_ = true;
+            return applied;
+        }
+        handleMessage(game, message);
+        if (message.type == net::MessageType::Snapshot) {
+            ++applied;
+        }
+        if (disconnected_) break;
+    }
+    return applied;
+}
+
+void AuthoritativeClient::updatePrediction(logic::RpgGame& game,
+                                           const core::PlayerInput& /*latestInput*/,
+                                           core::f32 dt) {
+    if (!hasAuthoritativeLocal_ || disconnected_) {
+        return;
+    }
+
+    dt = core::clamp(dt, 0.0f, kMaxPredictionFrame);
+
+    // Every frame restarts from the server position, so prediction never
+    // accumulates drift and an authoritative correction is applied immediately.
+    logic::PlayerState& local = game.player(localPlayer_);
+    local.position = authoritativeLocal_.position;
+    local.yaw = authoritativeLocal_.yaw;
+    local.jumpHeight = authoritativeLocal_.jumpHeight;
+    local.grounded = local.jumpHeight <= 1e-4f;
+    local.verticalVelocity =
+        local.grounded
+            ? 0.0f
+            : std::sqrt(2.0f * logic::RpgGame::kGravity * local.jumpHeight);
+    local.walkTime = 0.0f;
+
+    // Replay inputs the server has not processed yet at the fixed tick rate.
+    // The newest input is already in this list when it was sent; do not apply
+    // it a second time for the render frame (that would double movement speed).
+    core::usize replayed = 0;
+    for (const SentInput& sent : sentInputs_) {
+        if (replayed >= kMaxReplayedInputs) break;
+        game.predictLocalMovement(localPlayer_, sent.input, kPredictionStep);
+        ++replayed;
+    }
+    // Blend away the correction from the last snapshot instead of popping.
+    if (smoothingOffset_.lengthSquared() > 1e-8f) {
+        const core::f32 decay = std::exp(-kSmoothingDecay * dt);
+        smoothingOffset_ = smoothingOffset_ * decay;
+        if (smoothingOffset_.lengthSquared() < 1e-6f) {
+            smoothingOffset_ = {};
+        }
+    }
+    local.position += smoothingOffset_;
+
+    predictedPlayer_.position = local.position;
+    predictedPlayer_.yaw = local.yaw;
+    predictedPlayer_.jumpHeight = local.jumpHeight;
+    predictedPlayer_.valid = true;
+}
+
+void AuthoritativeClient::updateInterpolation(logic::RpgGame& game, core::f32 dt) {
+    if (!hasCurrentSnapshot_ || disconnected_) {
+        return;
+    }
+
+    // One snapshot interval per alpha unit. New snapshots reset the clock, so
+    // visual remote entities trail the authoritative state by up to one tick.
+    interpolationClock_ += core::clamp(dt, 0.0f, kMaxPredictionFrame);
+    interpolationAlpha_ =
+        core::clamp(interpolationClock_ / kInterpolationStep, 0.0f, 1.0f);
+
+    if (hasPreviousSnapshot_) {
+        game.applyRemoteInterpolation(localPlayer_, previousSnapshot_, currentSnapshot_,
+                                      interpolationAlpha_);
+    } else {
+        // First snapshot: show the authoritative state immediately.
+        game.applyRemoteInterpolation(localPlayer_, currentSnapshot_, currentSnapshot_, 0.0f);
+    }
+}
+
+void AuthoritativeClient::handleMessage(logic::RpgGame& game, const net::Message& message) {
+    switch (message.type) {
+    case net::MessageType::Snapshot: {
+        const auto& snapshot = std::get<core::WorldSnapshot>(message.payload);
+
+        // Keep the last two snapshots for render interpolation. The latest
+        // snapshot is still applied immediately below for authoritative checks.
+        if (hasCurrentSnapshot_) {
+            previousSnapshot_ = currentSnapshot_;
+            hasPreviousSnapshot_ = true;
+        }
+        currentSnapshot_ = snapshot;
+        hasCurrentSnapshot_ = true;
+        interpolationClock_ = 0.0f;
+        interpolationAlpha_ = 0.0f;
+
+        const core::usize localIndex = static_cast<core::usize>(localPlayer_);
+        const core::PlayerNetState& authoritative = snapshot.players[localIndex];
+
+        // Reconcile the previous prediction with the new authoritative state.
+        if (predictedPlayer_.valid) {
+            const core::Vec3 correction = predictedPlayer_.position - authoritative.position;
+            lastPredictionError_ = correction.length();
+            if (lastPredictionError_ > kSnapThreshold) {
+                smoothingOffset_ = {};
+                lastPredictionSnapped_ = true;
+            } else {
+                smoothingOffset_ = correction;
+                lastPredictionSnapped_ = false;
+            }
+        } else {
+            smoothingOffset_ = {};
+            lastPredictionError_ = 0.0f;
+            lastPredictionSnapped_ = false;
+        }
+
+        game.applyNetworkSnapshot(snapshot);
+        serverTick_ = std::max(serverTick_, snapshot.tick);
+        lastSnapshotTick_ = snapshot.tick;
+        ++snapshotsApplied_;
+
+        // Inputs at or before this tick are already reflected in the snapshot.
+        while (!sentInputs_.empty() && sentInputs_.front().tick <= snapshot.tick) {
+            sentInputs_.pop_front();
+        }
+
+        authoritativeLocal_ = authoritative;
+        hasAuthoritativeLocal_ = true;
+        predictedPlayer_.position = authoritative.position;
+        predictedPlayer_.yaw = authoritative.yaw;
+        predictedPlayer_.jumpHeight = authoritative.jumpHeight;
+        predictedPlayer_.valid = true;
+
+        // Validate client-side application against the authoritative hash.
+        net::Message checksum;
+        checksum.type = net::MessageType::Checksum;
+        checksum.payload = net::Checksum{snapshot.tick, game.checksum()};
+        if (!transport_.send(connection_, net::encode(checksum))) {
+            disconnected_ = true;
+        }
+        break;
+    }
+    case net::MessageType::ServerTick: {
+        const auto& tick = std::get<net::ServerTick>(message.payload);
+        serverTick_ = std::max(serverTick_, tick.tick);
+        break;
+    }
+    case net::MessageType::Disconnect:
+        disconnected_ = true;
+        break;
+    default:
+        break;
+    }
+}
+
+} // namespace eee::session
