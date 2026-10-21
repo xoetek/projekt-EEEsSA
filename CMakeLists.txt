@@ -65,7 +65,10 @@ target_link_libraries(eee_scene INTERFACE eee_core)
 # ---------------------------------------------------------------------------
 add_library(eee_logic STATIC
     src/logic/src/World.cpp
-    src/logic/src/RpgGame.cpp)
+    src/logic/src/RpgGame.cpp
+    src/logic/src/Classes.cpp
+    src/logic/src/Items.cpp
+    src/logic/src/Zones.cpp)
 target_include_directories(eee_logic PUBLIC src/logic/include)
 target_link_libraries(eee_logic PUBLIC eee_core eee_scene)
 eee_apply_warnings(eee_logic)
@@ -74,6 +77,7 @@ eee_apply_warnings(eee_logic)
 # platform: window + input. Graphics-API agnostic.
 # ---------------------------------------------------------------------------
 add_library(eee_platform STATIC
+    src/platform/src/Audio.cpp
     src/platform/src/Window.cpp
     src/platform/src/NullWindow.cpp)
 target_include_directories(eee_platform PUBLIC src/platform/include)
@@ -82,7 +86,7 @@ eee_apply_warnings(eee_platform)
 eee_enable_arc(eee_platform)
 
 if(APPLE)
-    target_sources(eee_platform PRIVATE src/platform/macos/CocoaWindow.mm)
+    target_sources(eee_platform PRIVATE src/platform/macos/CocoaWindow.mm src/platform/macos/AudioMac.mm)
     target_link_libraries(eee_platform PRIVATE "-framework Cocoa")
 endif()
 
@@ -97,6 +101,27 @@ add_library(eee_render STATIC
 target_include_directories(eee_render PUBLIC src/render/include)
 target_link_libraries(eee_render PUBLIC eee_core eee_scene eee_platform)
 eee_apply_warnings(eee_render)
+
+# ---------------------------------------------------------------------------
+# net: protocol + transport (no gameplay dependency).
+# ---------------------------------------------------------------------------
+add_library(eee_net STATIC
+    src/net/src/Protocol.cpp
+    src/net/src/TcpTransport.cpp)
+target_include_directories(eee_net PUBLIC src/net/include)
+target_link_libraries(eee_net PUBLIC eee_core)
+eee_apply_warnings(eee_net)
+
+# ---------------------------------------------------------------------------
+# session: fixed-tick simulation driver (single-player now, lockstep later).
+# ---------------------------------------------------------------------------
+add_library(eee_session STATIC
+    src/session/src/SessionDriver.cpp
+    src/session/src/LockstepSession.cpp
+    src/session/src/AuthoritativeClient.cpp)
+target_include_directories(eee_session PUBLIC src/session/include)
+target_link_libraries(eee_session PUBLIC eee_core eee_logic eee_net)
+eee_apply_warnings(eee_session)
 
 # ---------------------------------------------------------------------------
 # backends: concrete graphics APIs implementing IRenderDevice.
@@ -151,11 +176,18 @@ target_compile_definitions(eee_backends PUBLIC
     EEE_HAS_VULKAN=${EEE_HAS_VULKAN})
 
 # ---------------------------------------------------------------------------
+# Dedicated relay server (no window, no GPU, no simulation).
+# ---------------------------------------------------------------------------
+add_executable(eee_server src/server/main.cpp)
+target_link_libraries(eee_server PRIVATE eee_net eee_logic eee_core)
+eee_apply_warnings(eee_server)
+
+# ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
 add_executable(eee_demo src/app/main.cpp)
 target_link_libraries(eee_demo PRIVATE
-    eee_logic
+    eee_session
     eee_backends)
 eee_apply_warnings(eee_demo)
 
@@ -175,9 +207,30 @@ if(EEE_BUILD_TESTS)
     target_link_libraries(eee_render_tests PRIVATE eee_render)
     eee_apply_warnings(eee_render_tests)
 
+    add_executable(eee_session_tests src/tests/session_tests.cpp)
+    target_link_libraries(eee_session_tests PRIVATE eee_session)
+    eee_apply_warnings(eee_session_tests)
+
+    add_executable(eee_net_tests src/tests/net_tests.cpp)
+    target_link_libraries(eee_net_tests PRIVATE eee_net)
+    eee_apply_warnings(eee_net_tests)
+
     add_test(NAME logic COMMAND eee_tests)
     add_test(NAME render COMMAND eee_render_tests)
+    add_test(NAME session COMMAND eee_session_tests)
+    add_test(NAME net COMMAND eee_net_tests)
+    set_tests_properties(session net PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_test(NAME coop_smoke
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/coop_smoke.sh $<TARGET_FILE:eee_demo>)
+    set_tests_properties(coop_smoke PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+
+    add_test(NAME dedicated_smoke
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/dedicated_smoke.sh
+                $<TARGET_FILE:eee_demo> $<TARGET_FILE:eee_server>)
+    set_tests_properties(dedicated_smoke PROPERTIES TIMEOUT 40 SKIP_RETURN_CODE 77)
     add_test(NAME headless_smoke COMMAND eee_demo --backend=null --headless --frames=30)
+    add_test(NAME gameplay_smoke COMMAND eee_demo --backend=null --headless --frames=60 --fps --class=warrior)
     add_test(NAME fps_overlay_smoke COMMAND eee_demo --backend=null --headless --frames=30 --fps)
     add_test(NAME vsync_off_smoke COMMAND eee_demo --backend=null --headless --frames=30 --no-vsync)
 endif()
