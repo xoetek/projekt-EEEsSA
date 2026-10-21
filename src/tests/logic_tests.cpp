@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -44,6 +45,57 @@ void beginRun(RpgGame& game, ClassId classId = ClassId::Warrior) {
 
 bool hasSound(const std::vector<SoundId>& sounds, SoundId id) {
     return std::find(sounds.begin(), sounds.end(), id) != sounds.end();
+}
+
+bool sameMeshLayout(const scene::SceneSnapshot& first,
+                    const scene::SceneSnapshot& second) {
+    if (first.meshes.size() != second.meshes.size()) {
+        return false;
+    }
+    for (core::usize i = 0; i < first.meshes.size(); ++i) {
+        const scene::MeshInstance& a = first.meshes[i];
+        const scene::MeshInstance& b = second.meshes[i];
+        for (int j = 0; j < 16; ++j) {
+            if (a.transform.m[j] != b.transform.m[j]) {
+                return false;
+            }
+        }
+        if (a.color.x != b.color.x || a.color.y != b.color.y ||
+            a.color.z != b.color.z || a.color.w != b.color.w) {
+            return false;
+        }
+    }
+    return true;
+}
+
+core::u64 meshLayoutHash(const scene::SceneSnapshot& snapshot) {
+    core::u64 hash = 1469598103934665603ull;
+    auto mixByte = [&](core::u8 value) {
+        hash ^= value;
+        hash *= 1099511628211ull;
+    };
+    auto mixU64 = [&](core::u64 value) {
+        for (int i = 0; i < 8; ++i) {
+            mixByte(static_cast<core::u8>((value >> (8 * i)) & 0xFF));
+        }
+    };
+    auto mixF32 = [&](core::f32 value) {
+        core::u32 bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        mixU64(bits);
+    };
+
+    mixU64(snapshot.meshes.size());
+    for (const scene::MeshInstance& mesh : snapshot.meshes) {
+        for (core::f32 value : mesh.transform.m) {
+            mixF32(value);
+        }
+        mixF32(mesh.color.x);
+        mixF32(mesh.color.y);
+        mixF32(mesh.color.z);
+        mixF32(mesh.color.w);
+    }
+    return hash;
 }
 
 EnemyState* findBoss(RpgGame& game) {
@@ -223,6 +275,58 @@ void testAuthoritativeSnapshotApplication() {
     CHECK(targetSword.mods[0].value == 7.5f);
     CHECK(targetSword.mods[0].label == "+7 DAMAGE");
     CHECK(target.equipped(core::PlayerId::P0, ItemSlot::Armour).empty());
+}
+
+void testZoneStaticWorldDeterminism() {
+    RpgGame first;
+    RpgGame second;
+    first.beginCoop(ClassId::Warrior, ClassId::Archer);
+    second.beginCoop(ClassId::Warrior, ClassId::Archer);
+
+    const scene::SceneSnapshot zone0 = first.buildSnapshot();
+
+    // Push the second peer through another zone first. That advances its
+    // simulation RNG (enemy spawns), so matching zone-1 static meshes below
+    // prove generation is independent of simulation history.
+    core::WorldSnapshot decoy;
+    decoy.tick = 1;
+    decoy.zoneIndex = 2;
+    second.applyNetworkSnapshot(decoy);
+
+    core::WorldSnapshot snapshot;
+    snapshot.tick = 120;
+    snapshot.zoneIndex = 1;
+    for (core::u8 i = 0; i < 2; ++i) {
+        core::PlayerNetState& player = snapshot.players[i];
+        player.position = i == 0 ? core::Vec3{2.0f, 0.0f, 6.0f} : core::Vec3{-3.0f, 0.0f, 5.0f};
+        player.yaw = i == 0 ? 0.25f : -0.25f;
+        player.health = 120.0f + static_cast<core::f32>(i);
+        player.maxHealth = 120.0f + static_cast<core::f32>(i);
+        player.mana = 60.0f + static_cast<core::f32>(i);
+        player.maxMana = 60.0f + static_cast<core::f32>(i);
+        player.damage = 12.0f;
+        player.moveSpeed = 7.0f;
+        player.level = 1;
+        player.classId = i == 0 ? static_cast<core::u8>(ClassId::Warrior)
+                                : static_cast<core::u8>(ClassId::Archer);
+    }
+
+    first.applyNetworkSnapshot(snapshot);
+    second.applyNetworkSnapshot(snapshot);
+    CHECK(first.zoneIndex() == 1);
+    CHECK(second.zoneIndex() == 1);
+
+    const scene::SceneSnapshot firstZone1 = first.buildSnapshot();
+    const scene::SceneSnapshot secondZone1 = second.buildSnapshot();
+
+    // Static props, deterministic NPCs, players and campfire must match exactly.
+    CHECK(firstZone1.meshes.size() == secondZone1.meshes.size());
+    CHECK(meshLayoutHash(firstZone1) == meshLayoutHash(secondZone1));
+    CHECK(sameMeshLayout(firstZone1, secondZone1));
+
+    // Different zones must not reuse the same static layout.
+    CHECK(meshLayoutHash(zone0) != meshLayoutHash(firstZone1));
+    CHECK(!sameMeshLayout(zone0, firstZone1));
 }
 
 void testServerInventoryActions() {
@@ -1008,6 +1112,7 @@ int main() {
     testInputEdges();
     testPlayerArrayIsolation();
     testAuthoritativeSnapshotApplication();
+    testZoneStaticWorldDeterminism();
     testServerInventoryActions();
     testLocalInventoryAccessors();
     testTwoPlayerSimulation();

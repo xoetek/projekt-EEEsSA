@@ -237,6 +237,17 @@ void RpgGame::buildStaticWorld() {
     staticMeshes_.reserve(11000);
     const ZoneDef& def = zone();
 
+    // Invariant: the same zone index produces the same static world on the
+    // authoritative server and on every client. Static props are presentation
+    // and collision data, so derive their RNG from the zone index instead of
+    // consuming the simulation RNG. A client that applies a snapshot for a new
+    // zone must not depend on its own simulation history to rebuild collision.
+    constexpr core::u32 kStaticWorldSeed = 0x9E3779B9u;
+    constexpr core::u32 kStaticWorldZoneStep = 2654435761u;
+    const core::u32 savedRandomState = randomState_;
+    randomState_ =
+        kStaticWorldSeed ^ (static_cast<core::u32>(zoneIndex_) * kStaticWorldZoneStep);
+
     constexpr core::i32 kHalf = 56;
     for (core::i32 z = -kHalf; z <= kHalf; ++z) {
         for (core::i32 x = -kHalf; x <= kHalf; ++x) {
@@ -432,6 +443,8 @@ void RpgGame::buildStaticWorld() {
             obstacles_.push_back({{x, 0.0f, z}, 0.9f});
         }
     }
+
+    randomState_ = savedRandomState;
 }
 
 void RpgGame::spawnNpcs() {
