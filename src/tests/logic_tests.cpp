@@ -213,10 +213,13 @@ void testAuthoritativeSnapshotApplication() {
 
     source.player(core::PlayerId::P0).position = {3.0f, 0.0f, -4.0f};
     source.player(core::PlayerId::P0).health = 77.0f;
+    source.player(core::PlayerId::P0).walkTime = 1.75f;
+    source.player(core::PlayerId::P0).attackTimer = 0.2f;
     source.player(core::PlayerId::P1).position = {-2.0f, 0.0f, 6.0f};
     source.player(core::PlayerId::P1).loadout.gold = 42;
     source.enemiesMutable()[0].position = {8.0f, 0.0f, 9.0f};
     source.enemiesMutable()[0].health = 13.0f;
+    source.enemiesMutable()[0].bob = 0.45f;
 
     Item sword;
     sword.name = "REPLICATED BLADE";
@@ -239,8 +242,22 @@ void testAuthoritativeSnapshotApplication() {
     ring.mods.push_back(Modifier{StatId::Life, 12.0f, "+12 LIFE"});
     CHECK(source.addItem(core::PlayerId::P0, ring));
 
-    const core::WorldSnapshot snapshot = source.captureNetworkSnapshot(10);
+    core::WorldSnapshot snapshot = source.captureNetworkSnapshot(10);
+    snapshot.sounds = {static_cast<core::u8>(core::SoundId::Attack),
+                       static_cast<core::u8>(core::SoundId::Hit)};
+    CHECK(snapshot.sounds.size() == 2);
+    // beginCoop() emits menu/zone sounds; drain them so this test only sees
+    // sounds carried by the snapshot.
+    target.takeSoundEvents();
     target.applyNetworkSnapshot(snapshot);
+
+    CHECK(target.player(core::PlayerId::P0).walkTime == 1.75f);
+    CHECK(target.player(core::PlayerId::P0).attackTimer == 0.2f);
+    CHECK(target.enemies()[0].bob == 0.45f);
+    const auto replicatedSounds = target.takeSoundEvents();
+    CHECK(replicatedSounds.size() == 2);
+    CHECK(replicatedSounds[0] == core::SoundId::Attack);
+    CHECK(replicatedSounds[1] == core::SoundId::Hit);
 
     CHECK(target.player(core::PlayerId::P0).position.x == 3.0f);
     CHECK(target.player(core::PlayerId::P0).position.z == -4.0f);
@@ -459,6 +476,34 @@ void testTwoPlayerCombatAndTargeting() {
     CHECK(p0.loadout.kills == 0);
     CHECK(p1.loadout.xp > 0);
     CHECK(p0.loadout.xp == 0);
+}
+
+void testDeadPlayerDoesNotBlockAlly() {
+    RpgGame game;
+    beginRun(game);
+    game.setActivePlayers(2);
+    game.player(core::PlayerId::P0).health = -1.0f;
+    game.player(core::PlayerId::P1).health = 1.0e6f;
+    game.player(core::PlayerId::P1).maxHealth = 1.0e6f;
+
+    core::InputFrame frame;
+    frame.activePlayers = 2;
+    frame.players[1].moveX = 1.0f; // camera yaw 0 -> +X
+    game.updateFrame(1.0f / 60.0f, frame); // P0 dies here
+    CHECK(game.player(core::PlayerId::P0).playerDead);
+    CHECK(game.dead());
+
+    const Vec3 allyStart = game.player(core::PlayerId::P1).position;
+    for (int i = 0; i < 30; ++i) {
+        game.updateFrame(1.0f / 60.0f, frame);
+    }
+    CHECK(game.player(core::PlayerId::P1).position.x > allyStart.x + 0.5f);
+
+    // Respawning P0 must not reset P1 or leave the game in a dead UI state.
+    game.respawnPlayer(core::PlayerId::P0);
+    CHECK(!game.dead());
+    CHECK(!game.player(core::PlayerId::P0).playerDead);
+    CHECK(game.player(core::PlayerId::P1).health > 0.0f);
 }
 
 void testTwoPlayerDeterminism() {
@@ -1117,6 +1162,7 @@ int main() {
     testLocalInventoryAccessors();
     testTwoPlayerSimulation();
     testTwoPlayerCombatAndTargeting();
+    testDeadPlayerDoesNotBlockAlly();
     testTwoPlayerDeterminism();
     testClassSelectionAndScene();
     testMovementJumpAndCamera();

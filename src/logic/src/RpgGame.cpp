@@ -2217,6 +2217,8 @@ core::WorldSnapshot RpgGame::captureNetworkSnapshot(core::u64 tick) const {
         target.attackCooldown = source.attackCooldown;
         target.qCooldown = source.qCooldown;
         target.eCooldown = source.eCooldown;
+        target.walkTime = source.walkTime;
+        target.attackTimer = source.attackTimer;
         target.damage = source.damage;
         target.armour = source.armour;
         target.moveSpeed = source.moveSpeed;
@@ -2242,6 +2244,7 @@ core::WorldSnapshot RpgGame::captureNetworkSnapshot(core::u64 tick) const {
         core::EnemyNetState out;
         out.position = enemy.position;
         out.yaw = enemy.yaw;
+        out.bob = enemy.bob;
         out.health = enemy.health;
         out.maxHealth = enemy.maxHealth;
         out.scale = enemy.scale;
@@ -2377,6 +2380,8 @@ void RpgGame::applyNetworkSnapshot(const core::WorldSnapshot& snapshot) {
         target.attackCooldown = source.attackCooldown;
         target.qCooldown = source.qCooldown;
         target.eCooldown = source.eCooldown;
+        target.walkTime = source.walkTime;
+        target.attackTimer = source.attackTimer;
         target.damage = source.damage;
         target.armour = source.armour;
         target.moveSpeed = source.moveSpeed;
@@ -2426,6 +2431,7 @@ void RpgGame::applyNetworkSnapshot(const core::WorldSnapshot& snapshot) {
         enemy.position = source.position;
         enemy.home = source.position;
         enemy.yaw = source.yaw;
+        enemy.bob = source.bob;
         enemy.health = source.health;
         enemy.maxHealth = source.maxHealth;
         enemy.scale = source.scale;
@@ -2458,6 +2464,11 @@ void RpgGame::applyNetworkSnapshot(const core::WorldSnapshot& snapshot) {
     }
     effects_.clear();
     interactionHint_.clear();
+    for (const core::u8 sound : snapshot.sounds) {
+        if (sound < static_cast<core::u8>(core::SoundId::Count)) {
+            emit(static_cast<core::SoundId>(sound));
+        }
+    }
     messageTimer_ = 0.0f;
     message_.clear();
 }

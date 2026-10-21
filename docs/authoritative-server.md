@@ -48,7 +48,7 @@ correct them. Remote entities are interpolated, not simulated by clients.
 
 ---
 
-## 3. Protocol v2
+## 3. Protocol v3
 
 ### Client → Server
 
@@ -71,7 +71,7 @@ correct them. Remote entities are interpolated, not simulated by clients.
 | `LobbyState` | both classes, both ready flags, seed |
 | `StartRun` | classes, players, authoritative flag/start tick |
 | `ServerTick` | authoritative tick release; clients may not run ahead |
-| `Snapshot` | authoritative players/enemies/projectiles/loot/inventory state |
+| `Snapshot` | authoritative players/enemies/projectiles/loot/inventory, animation phase and queued sound events |
 | `Checksum` | periodic server checksum for client validation |
 | `Disconnect` | rejection or session end |
 | `Pong` | connectivity check response |
@@ -218,6 +218,8 @@ and static world identity.
 - ✅ Player snapshots now include cooldowns, damage, armour, move speed, crit and secondary-skill unlock.
 - ✅ `ActionRequest` protocol message (equip/use/drop) validated against the sender's player id.
 - ✅ Server applies inventory actions to the authoritative `RpgGame`; the next snapshot carries the resulting state.
+- ✅ Snapshots carry walk/attack animation phase, enemy bob, and the tick's queued sound events, so dedicated clients animate and play combat audio.
+- ✅ The server keeps simulating while a player is dead (P0's death no longer freezes P1).
 - ✅ Logic/protocol tests cover server-side equip/drop.
 - ⏳ Inventory/equipment contents are not yet replicated; no co-op inventory UI or action buttons yet (A4b).
 - ✅ Dedicated lobby: both clients choose a class and mark ready (`Enter`); the server starts once both are ready. Headless clients ready automatically.

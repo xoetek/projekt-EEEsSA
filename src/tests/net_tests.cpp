@@ -139,11 +139,14 @@ void testProtocolRoundTrips() {
         snapshot.portalActive = true;
         snapshot.players[0].position = {1, 2, 3};
         snapshot.players[0].health = 42;
+        snapshot.players[0].walkTime = 1.25f;
+        snapshot.players[0].attackTimer = 0.2f;
         snapshot.players[1].classId = 2;
         snapshot.players[1].dead = true;
         core::EnemyNetState enemy;
         enemy.position = {4, 0, 5};
         enemy.health = 12;
+        enemy.bob = 0.35f;
         enemy.boss = true;
         snapshot.enemies.push_back(enemy);
         core::ProjectileNetState projectile;
@@ -154,6 +157,7 @@ void testProtocolRoundTrips() {
         loot.position = {8, 0, 9};
         loot.rarity = 3;
         snapshot.loot.push_back(loot);
+        snapshot.sounds = {1, 4, 13};
 
         core::ItemNetState sword;
         sword.name = "RUNED BLADE";
@@ -202,10 +206,15 @@ void testProtocolRoundTrips() {
         CHECK(out.portalActive);
         CHECK(out.players[0].position.x == 1);
         CHECK(out.players[0].health == 42);
+        CHECK(out.players[0].walkTime == 1.25f);
+        CHECK(out.players[0].attackTimer == 0.2f);
         CHECK(out.players[1].dead);
         CHECK(out.enemies.size() == 1 && out.enemies[0].boss);
+        CHECK(out.enemies[0].bob == 0.35f);
         CHECK(out.projectiles.size() == 1);
         CHECK(out.loot.size() == 1 && out.loot[0].rarity == 3);
+        CHECK(out.sounds.size() == 3);
+        CHECK(out.sounds[2] == 13);
 
         CHECK(out.players[0].inventory.size() == 2);
         const core::ItemNetState& outSword = out.players[0].inventory[0];

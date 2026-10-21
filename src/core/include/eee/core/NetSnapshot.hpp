@@ -41,6 +41,8 @@ struct PlayerNetState {
     f32 attackCooldown = 0.0f;
     f32 qCooldown = 0.0f;
     f32 eCooldown = 0.0f;
+    f32 walkTime = 0.0f;
+    f32 attackTimer = 0.0f;
     f32 damage = 0.0f;
     f32 armour = 0.0f;
     f32 moveSpeed = 0.0f;
@@ -59,6 +61,7 @@ struct PlayerNetState {
 struct EnemyNetState {
     Vec3 position{};
     f32 yaw = 0.0f;
+    f32 bob = 0.0f;
     f32 health = 0.0f;
     f32 maxHealth = 0.0f;
     f32 scale = 1.0f;
@@ -90,6 +93,9 @@ struct WorldSnapshot {
     std::vector<EnemyNetState> enemies;
     std::vector<ProjectileNetState> projectiles;
     std::vector<LootNetState> loot;
+    // Sound events produced by the authoritative tick that created this
+    // snapshot. Values are core::SoundId cast to u8.
+    std::vector<u8> sounds;
 };
 
 } // namespace eee::core

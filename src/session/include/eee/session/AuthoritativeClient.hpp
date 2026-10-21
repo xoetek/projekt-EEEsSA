@@ -94,6 +94,8 @@ private:
     core::PlayerNetState authoritativeLocal_{};
     PredictedPlayer predictedPlayer_{};
     core::Vec3 smoothingOffset_{};
+    core::Vec3 correctionAnchor_{};
+    bool hasCorrectionAnchor_ = false;
     core::f32 lastPredictionError_ = 0.0f;
     bool hasAuthoritativeLocal_ = false;
     bool lastPredictionSnapped_ = false;

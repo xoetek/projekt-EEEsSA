@@ -112,7 +112,10 @@ void AuthoritativeClient::updatePrediction(logic::RpgGame& game,
         local.grounded
             ? 0.0f
             : std::sqrt(2.0f * logic::RpgGame::kGravity * local.jumpHeight);
-    local.walkTime = 0.0f;
+    // Start walk animation from the authoritative phase, then advance it for
+    // the replayed ticks. Resetting it to zero every frame made the legs and
+    // arms snap back to their rest pose.
+    local.walkTime = authoritativeLocal_.walkTime;
 
     // Replay inputs the server has not processed yet at the fixed tick rate.
     // The newest input is already in this list when it was sent; do not apply
@@ -123,6 +126,24 @@ void AuthoritativeClient::updatePrediction(logic::RpgGame& game,
         game.predictLocalMovement(localPlayer_, sent.input, kPredictionStep);
         ++replayed;
     }
+
+    // `base` is the simulation position, without the render-only smoothing
+    // offset. Keep it separate: feeding the smoothed position back into the
+    // next prediction double-counted the correction and caused visible jitter.
+    const core::Vec3 base = local.position;
+    predictedPlayer_.position = base;
+    predictedPlayer_.yaw = local.yaw;
+    predictedPlayer_.jumpHeight = local.jumpHeight;
+    predictedPlayer_.valid = true;
+
+    if (hasCorrectionAnchor_) {
+        smoothingOffset_ = correctionAnchor_ - base;
+        hasCorrectionAnchor_ = false;
+        if (smoothingOffset_.lengthSquared() >
+            kSnapThreshold * kSnapThreshold) {
+            smoothingOffset_ = {};
+        }
+    }
     // Blend away the correction from the last snapshot instead of popping.
     if (smoothingOffset_.lengthSquared() > 1e-8f) {
         const core::f32 decay = std::exp(-kSmoothingDecay * dt);
@@ -131,12 +152,7 @@ void AuthoritativeClient::updatePrediction(logic::RpgGame& game,
             smoothingOffset_ = {};
         }
     }
-    local.position += smoothingOffset_;
-
-    predictedPlayer_.position = local.position;
-    predictedPlayer_.yaw = local.yaw;
-    predictedPlayer_.jumpHeight = local.jumpHeight;
-    predictedPlayer_.valid = true;
+    local.position = base + smoothingOffset_;
 }
 
 void AuthoritativeClient::updateInterpolation(logic::RpgGame& game, core::f32 dt) {
@@ -184,13 +200,19 @@ void AuthoritativeClient::handleMessage(logic::RpgGame& game, const net::Message
             lastPredictionError_ = correction.length();
             if (lastPredictionError_ > kSnapThreshold) {
                 smoothingOffset_ = {};
+                hasCorrectionAnchor_ = false;
                 lastPredictionSnapped_ = true;
             } else {
-                smoothingOffset_ = correction;
+                // Remember the last rendered position. updatePrediction() will
+                // measure the new predicted base and derive the visual offset
+                // from it, so the correction is not applied twice.
+                correctionAnchor_ = predictedPlayer_.position + smoothingOffset_;
+                hasCorrectionAnchor_ = true;
                 lastPredictionSnapped_ = false;
             }
         } else {
             smoothingOffset_ = {};
+            hasCorrectionAnchor_ = false;
             lastPredictionError_ = 0.0f;
             lastPredictionSnapped_ = false;
         }

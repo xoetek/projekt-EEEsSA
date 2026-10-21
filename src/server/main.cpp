@@ -304,9 +304,10 @@ int main(int argc, char** argv) {
         };
 
         auto trySimulateAuthoritative = [&]() -> bool {
-            if (authoritative.uiMode() != eee::logic::UiMode::Playing) {
-                return false;
-            }
+            // Do not gate simulation on the local UI mode. A dead P0 switches
+            // RpgGame to UiMode::Dead, which used to freeze the whole server
+            // and leave the living P1 unable to move or respawn. updateFrame()
+            // already skips dead players and keeps the living player running.
             const bool neutralWarmup = authoritativeTick < 3;
             bool ready = true;
             for (int p = 0; p < 2; ++p) {
@@ -345,6 +346,11 @@ int main(int argc, char** argv) {
 
             eee::core::WorldSnapshot snapshot =
                 authoritative.captureNetworkSnapshot(authoritativeTick);
+            const auto tickSounds = authoritative.takeSoundEvents();
+            snapshot.sounds.reserve(tickSounds.size());
+            for (const eee::core::SoundId sound : tickSounds) {
+                snapshot.sounds.push_back(static_cast<eee::core::u8>(sound));
+            }
             Message snapshotMessage;
             snapshotMessage.type = MessageType::Snapshot;
             snapshotMessage.payload = std::move(snapshot);

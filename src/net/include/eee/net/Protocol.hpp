@@ -10,7 +10,7 @@
 
 namespace eee::net {
 
-inline constexpr core::u16 kProtocolVersion = 2;
+inline constexpr core::u16 kProtocolVersion = 3;
 inline constexpr core::usize kMaxFramePayload = 64 * 1024;
 
 // Bounds for inventory replication in core::WorldSnapshot.
@@ -18,6 +18,7 @@ inline constexpr core::u16 kMaxSnapshotInventory = 24;
 inline constexpr core::u16 kMaxSnapshotEquipment = 8;
 inline constexpr core::u16 kMaxSnapshotString = 128;
 inline constexpr core::u16 kMaxSnapshotMods = 16;
+inline constexpr core::u16 kMaxSnapshotSounds = 64;
 
 enum class MessageType : core::u16 {
     Hello = 1,

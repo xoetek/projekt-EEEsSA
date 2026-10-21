@@ -242,6 +242,8 @@ std::vector<core::u8> encode(const Message& message) {
                     writer.f32(player.attackCooldown);
                     writer.f32(player.qCooldown);
                     writer.f32(player.eCooldown);
+                    writer.f32(player.walkTime);
+                    writer.f32(player.attackTimer);
                     writer.f32(player.damage);
                     writer.f32(player.armour);
                     writer.f32(player.moveSpeed);
@@ -270,6 +272,7 @@ std::vector<core::u8> encode(const Message& message) {
                     writer.f32(enemy.position.y);
                     writer.f32(enemy.position.z);
                     writer.f32(enemy.yaw);
+                    writer.f32(enemy.bob);
                     writer.f32(enemy.health);
                     writer.f32(enemy.maxHealth);
                     writer.f32(enemy.scale);
@@ -299,6 +302,12 @@ std::vector<core::u8> encode(const Message& message) {
                     writer.f32(loot.position.y);
                     writer.f32(loot.position.z);
                     writer.u8(loot.rarity);
+                }
+                const core::usize soundCount =
+                    std::min(payload.sounds.size(), static_cast<core::usize>(kMaxSnapshotSounds));
+                writer.u16(static_cast<core::u16>(soundCount));
+                for (core::usize i = 0; i < soundCount; ++i) {
+                    writer.u8(payload.sounds[i]);
                 }
             }
         },
@@ -449,6 +458,7 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
                 !reader.f32(player.mana) || !reader.f32(player.maxMana) ||
                 !reader.f32(player.jumpHeight) || !reader.f32(player.attackCooldown) ||
                 !reader.f32(player.qCooldown) || !reader.f32(player.eCooldown) ||
+                !reader.f32(player.walkTime) || !reader.f32(player.attackTimer) ||
                 !reader.f32(player.damage) || !reader.f32(player.armour) ||
                 !reader.f32(player.moveSpeed) || !reader.f32(player.critChance) ||
                 !reader.u8(secondary) || !reader.i32(player.level) || !reader.i32(player.xp) ||
@@ -480,7 +490,8 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
             core::u8 ranged = 0;
             if (!reader.f32(enemy.position.x) || !reader.f32(enemy.position.y) ||
                 !reader.f32(enemy.position.z) || !reader.f32(enemy.yaw) ||
-                !reader.f32(enemy.health) || !reader.f32(enemy.maxHealth) ||
+                !reader.f32(enemy.bob) || !reader.f32(enemy.health) ||
+                !reader.f32(enemy.maxHealth) ||
                 !reader.f32(enemy.scale) || !reader.f32(enemy.color.x) ||
                 !reader.f32(enemy.color.y) || !reader.f32(enemy.color.z) ||
                 !reader.f32(enemy.color.w) || !reader.u8(alive) || !reader.u8(boss) ||
@@ -513,6 +524,12 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
                 !reader.f32(loot.position.z) || !reader.u8(loot.rarity)) {
                 return false;
             }
+        }
+        core::u16 soundCount = 0;
+        if (!reader.u16(soundCount) || soundCount > kMaxSnapshotSounds) return false;
+        snapshot.sounds.resize(soundCount);
+        for (core::u8& sound : snapshot.sounds) {
+            if (!reader.u8(sound)) return false;
         }
         message.payload = std::move(snapshot);
         break;
