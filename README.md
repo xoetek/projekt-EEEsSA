@@ -275,9 +275,12 @@ co-op inventory are the next polish phase. Single-player is unchanged.
 # host/VM with a reachable address
 ./build/eee_server --port=27015
 
+# optional shared-secret authentication
+./build/eee_server --port=27015 --password=our-secret
+
 # each player, anywhere on the internet (TCP reachability required)
-./build/eee_demo --join=YOUR_SERVER_HOST:27015 --class=warrior
-./build/eee_demo --join=YOUR_SERVER_HOST:27015 --class=archer
+./build/eee_demo --join=YOUR_SERVER_HOST:27015 --password=our-secret --class=warrior
+./build/eee_demo --join=YOUR_SERVER_HOST:27015 --password=our-secret --class=archer
 ```
 
 `eee_server` is a **dedicated relay with a shadow authoritative simulation**:
@@ -306,10 +309,11 @@ Internet requirements and caveats:
 
 - The server needs a public IP/DNS name and an open TCP port (firewall/security
   group + port forwarding on a home router).
-- The protocol is **plaintext and unauthenticated**. The server now applies
-  rate limits, input tick-window checks and player-id validation, but those are
-  robustness guards, not authentication. Use it only with trusted players, or put
-  it behind a firewall/VPN/TLS terminator. Do not expose it openly as-is.
+- The protocol is **plaintext**. Optional shared-secret auth (`--password`) now
+  gates the lobby and is checked in constant time before `Welcome`/resume tokens,
+  and the server applies rate limits, tick-window checks and player-id validation.
+  The shared secret is sent as a fast FNV hash, not TLS-grade cryptography; use a
+  firewall/VPN/TLS terminator for hostile networks. Do not expose it openly as-is.
 - NAT traversal, matchmaking, relay authentication and authoritative server
   simulation are not implemented yet.
 

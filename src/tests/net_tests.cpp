@@ -1,5 +1,6 @@
 #include "TestHarness.hpp"
 
+#include "eee/net/Auth.hpp"
 #include "eee/net/Protocol.hpp"
 #include "eee/net/RateLimiter.hpp"
 #include "eee/net/TcpTransport.hpp"
@@ -21,12 +22,13 @@ const T& payload(const Message& message) {
 
 void testProtocolRoundTrips() {
     {
-        Message message{MessageType::Hello, Hello{2, 0x1122334455667788ull}};
+        Message message{MessageType::Hello, Hello{2, 0x1122334455667788ull, 0xAABBCCDDull}};
         Message decoded;
         CHECK(decode(encode(message), decoded));
         CHECK(decoded.type == MessageType::Hello);
         CHECK(payload<Hello>(decoded).classId == 2);
         CHECK(payload<Hello>(decoded).nonce == 0x1122334455667788ull);
+        CHECK(payload<Hello>(decoded).authToken == 0xAABBCCDDull);
     }
     {
         Message message{MessageType::Welcome, Welcome{1, 42, 60, 0x1234567890ull}};
@@ -322,6 +324,13 @@ std::optional<ConnectionId> acceptWithTimeout(TcpTransport& transport,
     return std::nullopt;
 }
 
+void testAuth() {
+    CHECK(eee::net::hashSecret("swordfish") == eee::net::hashSecret("swordfish"));
+    CHECK(eee::net::hashSecret("swordfish") != eee::net::hashSecret("swordfisq"));
+    CHECK(eee::net::constantTimeEqual(123, 123));
+    CHECK(!eee::net::constantTimeEqual(123, 124));
+}
+
 void testRateLimiter() {
     eee::net::TokenBucket bucket(10.0, 3.0);
     CHECK(bucket.consume(0.0));
@@ -391,6 +400,7 @@ int main() {
     testProtocolRoundTrips();
     testMalformedFrames();
     testRateLimiter();
+    testAuth();
     testTcpLoopback();
     if (gTcpUnavailable) {
         const int status = eee::test::report("net (TCP skipped)");

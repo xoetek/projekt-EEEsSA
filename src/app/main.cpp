@@ -8,6 +8,7 @@
 #include "eee/render/DebugText.hpp"
 #include "eee/render/DeviceRegistry.hpp"
 #include "eee/render/IRenderDevice.hpp"
+#include "eee/net/Auth.hpp"
 #include "eee/net/Protocol.hpp"
 #include "eee/net/TcpTransport.hpp"
 #include "eee/render/Renderer.hpp"
@@ -83,6 +84,7 @@ struct Options {
     bool join = false;
     std::string hostPort = "27015";
     std::string joinAddress;
+    std::string password;
     core::i32 aa = 4;
     core::i32 quality = 2;
     core::i32 fpsCap = 0;
@@ -107,6 +109,7 @@ void printUsage() {
         "  --fps-cap=<n>      Frame cap (0 = off)\n"
         "  --host[=port]      Host a 2-player LAN co-op session (default 27015)\n"
         "  --join=host[:port] Join a co-op session\n"
+        "  --password=<pw>    Shared secret for a dedicated server\n"
         "  --list-backends    Print available backends\n"
         "  --help             Show this message\n"
         "\n"
@@ -147,6 +150,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg.starts_with("--join=")) {
             options.join = true;
             options.joinAddress = valueOf("--join=");
+        } else if (arg.starts_with("--password=")) {
+            options.password = valueOf("--password=");
         } else if (arg.starts_with("--class=")) {
             options.startClass = valueOf("--class=");
         } else if (arg.starts_with("--aa=")) {
@@ -200,6 +205,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
     }
     if (options.host && options.join) {
         core::logError("--host and --join are mutually exclusive");
+        return false;
+    }
+    if (options.host && !options.password.empty()) {
+        core::logError("--password is supported by the dedicated server (eee_server), not --host");
         return false;
     }
     return true;
@@ -979,9 +988,15 @@ int main(int argc, char** argv) {
             }
             coopConnection = *connection;
 
+            auto helloMessage = waitForMessage(*coopNet, coopConnection, 8000);
+            if (!helloMessage.has_value() || helloMessage->type != net::MessageType::Hello) {
+                core::logError("co-op: peer did not send a Hello");
+                return fail(1);
+            }
+
             net::Message welcome;
             welcome.type = net::MessageType::Welcome;
-            welcome.payload = net::Welcome{1, 1, 60};
+            welcome.payload = net::Welcome{1, 1, 60, 0};
             sendMessage(*coopNet, coopConnection, welcome);
 
             net::Message choice;
@@ -989,13 +1004,23 @@ int main(int argc, char** argv) {
             choice.payload = net::ClassChoice{static_cast<core::u8>(localClass)};
             sendMessage(*coopNet, coopConnection, choice);
 
-            auto peerChoice = waitForMessage(*coopNet, coopConnection, 8000);
-            if (!peerChoice.has_value() || peerChoice->type != net::MessageType::ClassChoice) {
+            std::optional<net::ClassChoice> peerClass;
+            for (int attempt = 0; attempt < 3 && !peerClass.has_value(); ++attempt) {
+                auto peerMessage = waitForMessage(*coopNet, coopConnection, 8000);
+                if (!peerMessage.has_value()) break;
+                if (peerMessage->type == net::MessageType::ClassChoice) {
+                    peerClass = std::get<net::ClassChoice>(peerMessage->payload);
+                } else if (peerMessage->type == net::MessageType::Hello) {
+                    // Listen-host has no password; ignore the auth preamble.
+                } else {
+                    break;
+                }
+            }
+            if (!peerClass.has_value()) {
                 core::logError("co-op: peer did not send a class choice");
                 return fail(1);
             }
-            remoteClass = static_cast<logic::ClassId>(
-                std::get<net::ClassChoice>(peerChoice->payload).classId);
+            remoteClass = static_cast<logic::ClassId>(peerClass->classId);
             if (remoteClass != logic::ClassId::Warrior &&
                 remoteClass != logic::ClassId::Archer && remoteClass != logic::ClassId::Mage) {
                 remoteClass = logic::ClassId::Warrior;
@@ -1043,6 +1068,14 @@ int main(int argc, char** argv) {
             }
             coopConnection = *connection;
 
+            net::Message hello;
+            hello.type = net::MessageType::Hello;
+            hello.payload = net::Hello{static_cast<core::u8>(localClass), 0,
+                                       net::hashSecret(options.password)};
+            if (!sendMessage(*coopNet, coopConnection, hello)) {
+                return fail(1);
+            }
+
             net::Message choice;
             choice.type = net::MessageType::ClassChoice;
             choice.payload = net::ClassChoice{static_cast<core::u8>(localClass)};
@@ -1066,6 +1099,9 @@ int main(int argc, char** argv) {
                 } else if (message->type == net::MessageType::StartRun) {
                     startRun = std::get<net::StartRun>(message->payload);
                     authoritativeServer = startRun->authoritative;
+                } else if (message->type == net::MessageType::Disconnect) {
+                    core::logError("co-op: server rejected the connection (auth or lobby)");
+                    break;
                 }
             }
             if (!startRun.has_value()) {

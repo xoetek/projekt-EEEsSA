@@ -40,6 +40,7 @@ enum class MessageType : core::u16 {
 struct Hello {
     core::u8 classId = 0;
     core::u64 nonce = 0;
+    core::u64 authToken = 0;
 };
 
 struct Welcome {

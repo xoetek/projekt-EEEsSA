@@ -178,6 +178,7 @@ std::vector<core::u8> encode(const Message& message) {
             if constexpr (std::is_same_v<T, Hello>) {
                 writer.u8(payload.classId);
                 writer.u64(payload.nonce);
+                writer.u64(payload.authToken);
             } else if constexpr (std::is_same_v<T, Welcome>) {
                 writer.u8(payload.playerId);
                 writer.u32(payload.sessionId);
@@ -316,7 +317,8 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
     switch (message.type) {
     case MessageType::Hello: {
         Hello payload;
-        if (!reader.u8(payload.classId) || !reader.u64(payload.nonce)) return false;
+        if (!reader.u8(payload.classId) || !reader.u64(payload.nonce) ||
+            !reader.u64(payload.authToken)) return false;
         message.payload = payload;
         break;
     }

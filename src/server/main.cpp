@@ -1,6 +1,7 @@
 #include "eee/core/Log.hpp"
 #include "eee/logic/RpgGame.hpp"
 #include "eee/net/Protocol.hpp"
+#include "eee/net/Auth.hpp"
 #include "eee/net/RateLimiter.hpp"
 #include "eee/net/TcpTransport.hpp"
 
@@ -60,9 +61,10 @@ void printUsage() {
         "EEEsSA dedicated relay server\n"
         "\n"
         "Usage: eee_server [options]\n"
-        "  --port=<n>   TCP listen port (default 27015)\n"
-        "  --once       Exit after one two-player session\n"
-        "  --help       Show this message\n"
+        "  --port=<n>       TCP listen port (default 27015)\n"
+        "  --password=<pw>  Require this shared secret from clients\n"
+        "  --once           Exit after one two-player session\n"
+        "  --help           Show this message\n"
         "\n"
         "This is a relay, not an authoritative server. Clients must use the same\n"
         "build. Internet play requires a reachable public IP and TCP port forwarding.\n"
@@ -75,6 +77,7 @@ void printUsage() {
 int main(int argc, char** argv) {
     int port = 27015;
     bool once = false;
+    std::string password;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
@@ -84,6 +87,8 @@ int main(int argc, char** argv) {
             once = true;
         } else if (arg.starts_with("--port=")) {
             port = std::atoi(arg.substr(7).c_str());
+        } else if (arg.starts_with("--password=")) {
+            password = arg.substr(11);
         } else {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
             return 2;
@@ -99,7 +104,9 @@ int main(int argc, char** argv) {
         logf(LogLevel::Error, "server: failed to listen on port %d", port);
         return 1;
     }
-    logf(LogLevel::Info, "server: listening on TCP port %u", transport.localPort());
+    const eee::core::u64 expectedAuthToken = eee::net::hashSecret(password);
+    logf(LogLevel::Info, "server: listening on TCP port %u%s", transport.localPort(),
+         password.empty() ? "" : " (password required)");
 
     eee::core::u32 sessionCounter = 0;
     while (true) {
@@ -129,6 +136,20 @@ int main(int argc, char** argv) {
         std::array<eee::core::u8, 2> classes{0, 0};
         bool handshakeOk = true;
         for (int i = 0; i < 2; ++i) {
+            // Authenticate before sending the Welcome/resume token.
+            auto helloMessage = waitForMessage(transport, connections[i], 15000);
+            if (!helloMessage.has_value() || helloMessage->type != MessageType::Hello) {
+                handshakeOk = false;
+                break;
+            }
+            const auto& hello = std::get<eee::net::Hello>(helloMessage->payload);
+            if (!password.empty() &&
+                !eee::net::constantTimeEqual(hello.authToken, expectedAuthToken)) {
+                logf(LogLevel::Warning, "server: P%d authentication failed", i);
+                handshakeOk = false;
+                break;
+            }
+
             Message welcome;
             welcome.type = MessageType::Welcome;
             welcome.payload = eee::net::Welcome{static_cast<eee::core::u8>(i), sessionId, 60,
@@ -137,12 +158,32 @@ int main(int argc, char** argv) {
                 handshakeOk = false;
                 break;
             }
-            auto choice = waitForMessage(transport, connections[i], 15000);
-            if (!choice.has_value() || choice->type != MessageType::ClassChoice) {
+
+            bool gotClass = false;
+            for (int attempt = 0; attempt < 2 && !gotClass; ++attempt) {
+                auto incoming = waitForMessage(transport, connections[i], 15000);
+                if (!incoming.has_value()) break;
+                if (incoming->type == MessageType::ClassChoice) {
+                    classes[i] = std::get<eee::net::ClassChoice>(incoming->payload).classId;
+                    gotClass = true;
+                }
+            }
+            if (!gotClass) {
                 handshakeOk = false;
                 break;
             }
-            classes[i] = std::get<eee::net::ClassChoice>(choice->payload).classId;
+        }
+        if (!handshakeOk) {
+            logf(LogLevel::Warning, "server: lobby handshake/authentication failed");
+            for (ConnectionId id : connections) {
+                Message bye;
+                bye.type = MessageType::Disconnect;
+                bye.payload = eee::net::Disconnect{3};
+                send(transport, id, bye);
+                transport.close(id);
+            }
+            if (once) return 1;
+            continue;
         }
         if (!handshakeOk) {
             logf(LogLevel::Warning, "server: lobby handshake failed");

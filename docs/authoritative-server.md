@@ -1,6 +1,6 @@
 # Authoritative Server Architecture
 
-Status: **A1–A6 complete: authoritative world, inventory, prediction/interpolation, zones and reconnect.**
+Status: **A1–A6 + A7a/b auth guards complete; TLS remains.**
 Current build: deterministic client lockstep + a TCP relay (`eee_server`) that
 now also owns a **shadow authoritative `RpgGame`**: it applies both clients'
 inputs at a fixed 60 Hz, computes server checksums every 30 ticks and validates
@@ -250,12 +250,14 @@ and static world identity.
 - ✅ Debug hook: **F8** drops the client TCP connection so reconnect can be exercised on localhost.
 - ⏳ Reconnect currently requires the server process/session to still be within its 20s grace; no reconnect after session end.
 
-### A7 — Security hardening (A7a ✅ / A7b next)
+### A7 — Security hardening (A7a ✅ / A7b ✅ shared-secret auth; TLS next)
 - ✅ Per-connection token-bucket rate limits (messages and inventory actions).
 - ✅ Input tick-window validation; playerId must match the connection.
 - ✅ Invalid-command budget disconnects abusive clients; malformed frames already disconnect.
 - ✅ Respawn action is only accepted for dead players.
-- ⏳ TLS/authentication are **not** implemented. The protocol is plaintext and unauthenticated; use a firewall/VPN or a TLS terminator before exposing it publicly.
+- ✅ Optional shared-secret authentication for `eee_server`: `--password=<pw>`; clients send a hash in `Hello`, the server compares in constant time **before** sending `Welcome`/resume tokens.
+- ✅ Resume tokens are only issued after successful auth; reconnect uses the token.
+- ⏳ TLS and cryptographic authentication are **not** implemented. The protocol is still plaintext; use a firewall/VPN or a TLS terminator before exposing it publicly.
 - ⏳ Kick/ban persistence and replay protection are future work.
 
 ### A8 — Matchmaking / NAT
