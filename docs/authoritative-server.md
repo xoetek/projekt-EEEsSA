@@ -54,25 +54,27 @@ correct them. Remote entities are interpolated, not simulated by clients.
 
 | Message | Purpose |
 |---|---|
-| `AuthRequest` | protocol version, build hash, optional token |
-| `AuthResult` / `Welcome` | assigned playerId, sessionId, tickRate |
-| `ClassChoice` | lobby class |
-| `Ready` | ready/start intent |
+| `Hello` | desired class, nonce, optional auth token |
+| `Welcome` | assigned playerId, sessionId, tickRate, resume token (after auth) |
+| `ClassChoice` | lobby class (can change before start) |
+| `Ready` | ready/cancel-ready intent |
 | `InputCommand` | tick, PlayerInput (movement/aim/buttons) |
-| `ActionRequest` | interact/pickup/equip/drop/use gem/flask |
-| `Ping` | RTT / clock sync |
+| `ActionRequest` | equip/use or drop by inventory index |
+| `ResumeRequest` | sessionId, playerId, resume token |
+| `Ping` | connectivity check |
 | `Disconnect` | leave |
 
 ### Server → Client
 
 | Message | Purpose |
 |---|---|
-| `LobbyState` | classes, ready flags, seed |
-| `StartRun` | zone, players, authoritative start tick |
+| `LobbyState` | both classes, both ready flags, seed |
+| `StartRun` | classes, players, authoritative flag/start tick |
 | `ServerTick` | authoritative tick release; clients may not run ahead |
-| `Snapshot` | full/delta world state at tick |
-| `PlayerStats` | HP/MP/XP/level/gold/cooldowns (local + ally HUD) |
-| `InventoryDelta` | authoritative bag/equipment changes |
+| `Snapshot` | authoritative players/enemies/projectiles/loot/inventory state |
+| `Checksum` | periodic server checksum for client validation |
+| `Disconnect` | rejection or session end |
+| `Pong` | connectivity check response |
 | `ActionResult` | accepted/rejected + reason |
 | `ServerChecksum` | periodic validation stamp |
 | `CorrectPlayer` | authoritative position/state correction |
@@ -218,7 +220,8 @@ and static world identity.
 - ✅ Server applies inventory actions to the authoritative `RpgGame`; the next snapshot carries the resulting state.
 - ✅ Logic/protocol tests cover server-side equip/drop.
 - ⏳ Inventory/equipment contents are not yet replicated; no co-op inventory UI or action buttons yet (A4b).
-- ⏳ Loot pickup/NPC/fire/portal interactions already go through `PlayerInput.interact` on the server.
+- ✅ Dedicated lobby: both clients choose a class and mark ready (`Enter`); the server starts once both are ready. Headless clients ready automatically.
+- ✅ Loot pickup/NPC/fire/portal interactions go through `PlayerInput.interact` on the server.
 - `PlayerStats`, `InventoryDelta`, `ActionRequest`.
 - Loot pickup/equip/drop/flask/gem go through server validation.
 - Co-op inventory UI becomes server-confirmed.

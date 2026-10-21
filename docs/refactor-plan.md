@@ -92,8 +92,8 @@ phase is meant to be shippable with the game still playable in single-player.
     sent while it is open so the peer never stalls.
   - Two-process CTest (`coop_smoke`) runs host+client headless and verifies both
     exit cleanly.
-  - **Deferred to 6b:** full lobby/ready UI (classes currently come from
-    `--class`), co-op inventory, death/respawn/revive flow, reconnect.
+  - Co-op inventory, death/respawn and reconnect are implemented in the
+    authoritative path; the listen-host path still auto-starts.
 - **Phase 6c — Dedicated relay server: ✅ complete.**
   - New headless `eee_server` executable (no window/GPU/simulation).
   - Listens on TCP, accepts two clients, sends `Welcome` with assigned player
@@ -409,9 +409,10 @@ Messages:
 |---|---|---|
 | `Hello` | C→S | protocol version, desired class, client nonce |
 | `Welcome` | S→C | playerId (1), sessionId, tickRate |
-| `LobbyState` | S→C | host class, client ready, seed |
+| `LobbyState` | S→C | host/client class, host/client ready, seed |
+| `Ready` | C→S | ready or cancel-ready |
 | `ClassChoice` | C→S | classId |
-| `StartRun` | S→both | seed, zoneIndex, activePlayers, startTick |
+| `StartRun` | S→both | seed, zoneIndex, activePlayers, startTick, classes, authoritative |
 | `InputCommand` | both→both | playerId, tick, PlayerInput |
 | `InputAck` | S→C | highest tick received |
 | `Checksum` | both | tick, u64 hash |
@@ -589,10 +590,13 @@ previous acceptance test passes.
 
 ### Phase 6b — Lobby and co-op polish
 
-- In-app lobby with class cards and ready/start handshake.
-- Co-op inventory (local overlay while simulation continues).
-- Death → revive/respawn rules; reconnect/leave messages.
-- Interaction prompts for the local viewer (currently P0-oriented).
+- ✅ Dedicated-server lobby: class selection, remote ready state, `Enter` ready,
+  server starts only when both players are ready; headless clients auto-ready.
+- ✅ Co-op inventory (local overlay while simulation continues).
+- ✅ Death → respawn, reconnect grace and leave messages.
+- ⏳ Listen-host (`--host`) lobby: the LAN host still starts immediately after
+  receiving the peer class; only the dedicated path uses the lobby handshake.
+- ⏳ Interaction prompts are still local-viewer oriented.
 
 ### Phase 7 — Authoritative server
 

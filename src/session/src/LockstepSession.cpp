@@ -174,6 +174,7 @@ void LockstepSession::handleMessage(const net::Message& message) {
     case net::MessageType::ClassChoice:
     case net::MessageType::StartRun:
     case net::MessageType::InputAck:
+    case net::MessageType::Ready:
         break;
     }
 }

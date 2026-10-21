@@ -10,7 +10,7 @@
 
 namespace eee::net {
 
-inline constexpr core::u16 kProtocolVersion = 1;
+inline constexpr core::u16 kProtocolVersion = 2;
 inline constexpr core::usize kMaxFramePayload = 64 * 1024;
 
 // Bounds for inventory replication in core::WorldSnapshot.
@@ -35,6 +35,7 @@ enum class MessageType : core::u16 {
     Snapshot = 13,
     ActionRequest = 14,
     ResumeRequest = 15,
+    Ready = 16,
 };
 
 struct Hello {
@@ -52,8 +53,14 @@ struct Welcome {
 
 struct LobbyState {
     core::u8 hostClass = 0;
+    core::u8 clientClass = 0;
+    bool hostReady = false;
     bool clientReady = false;
     core::u64 seed = 0;
+};
+
+struct Ready {
+    bool ready = true;
 };
 
 struct ClassChoice {
@@ -111,7 +118,7 @@ struct ActionRequest {
 
 using Payload = std::variant<Hello, Welcome, LobbyState, ClassChoice, StartRun, InputCommand,
                              InputAck, Checksum, Timestamp, Disconnect, ServerTick,
-                             core::WorldSnapshot, ActionRequest, ResumeRequest>;
+                             core::WorldSnapshot, ActionRequest, ResumeRequest, Ready>;
 
 struct Message {
     MessageType type = MessageType::Ping;

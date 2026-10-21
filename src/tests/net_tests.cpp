@@ -40,10 +40,12 @@ void testProtocolRoundTrips() {
         CHECK(payload<Welcome>(decoded).resumeToken == 0x1234567890ull);
     }
     {
-        Message message{MessageType::LobbyState, LobbyState{1, true, 0xABCDEF}};
+        Message message{MessageType::LobbyState, LobbyState{1, 2, true, false, 0xABCDEF}};
         Message decoded;
         CHECK(decode(encode(message), decoded));
-        CHECK(payload<LobbyState>(decoded).clientReady);
+        CHECK(payload<LobbyState>(decoded).clientClass == 2);
+        CHECK(payload<LobbyState>(decoded).hostReady);
+        CHECK(!payload<LobbyState>(decoded).clientReady);
         CHECK(payload<LobbyState>(decoded).seed == 0xABCDEF);
     }
     {
@@ -51,6 +53,13 @@ void testProtocolRoundTrips() {
         Message decoded;
         CHECK(decode(encode(message), decoded));
         CHECK(payload<ClassChoice>(decoded).classId == 2);
+    }
+    {
+        Message message{MessageType::Ready, Ready{true}};
+        Message decoded;
+        CHECK(decode(encode(message), decoded));
+        CHECK(decoded.type == MessageType::Ready);
+        CHECK(payload<Ready>(decoded).ready);
     }
     {
         Message message{MessageType::StartRun, StartRun{7, 3, 2, 100, 1, 2, true}};

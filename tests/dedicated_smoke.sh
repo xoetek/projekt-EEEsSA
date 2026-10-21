@@ -35,6 +35,7 @@ if grep -q "failed to listen\|Operation not permitted" "$SERVER_LOG" "$C1_LOG" "
 fi
 
 if [ "$SERVER_STATUS" -ne 0 ] || [ "$C1_STATUS" -ne 0 ] || [ "$C2_STATUS" -ne 0 ] ||
+   ! grep -q "server: lobby ready" "$SERVER_LOG" ||
    ! grep -q "checksums validated" "$SERVER_LOG"; then
     echo "dedicated smoke failed (server=$SERVER_STATUS c1=$C1_STATUS c2=$C2_STATUS)"
     echo "--- server ---"; cat "$SERVER_LOG"

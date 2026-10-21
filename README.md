@@ -58,26 +58,27 @@ These are deliberately **not** faked or shipped as stubs:
   fog).
 - **Resolution scaling** — needs an offscreen render-resolution target plus an
   upscale/resolve path on both backends.
-- **Networked multiplayer** — still a separate milestone; see
-  [docs/multiplayer-plan.md](docs/multiplayer-plan.md).
+- **Networked multiplayer** — dedicated authoritative server + LAN listen-host
+  co-op; see [docs/authoritative-server.md](docs/authoritative-server.md).
 
 Everything else requested (items/comparison/drop, fire checkpoint, unique boss
 patterns, varied biomes, options menu) is implemented.
 
 ## Multiplayer status
 
-**LAN 2-player co-op is playable now**, using the deterministic
-`LockstepSession` over TCP (`eee_net` + `eee_session`): command queues, 3-tick
-input delay, checksums and desync detection. Classes are selected with `--class`;
-`RpgGame` runs both players with independent cameras, stats, inventories and
-combat. A dedicated relay server (`eee_server`) supports remote/internet
-connections over TCP, and a listen-host mode (`--host`) is available for LAN.
-Server-authoritative play is the next architecture migration; see
-[docs/authoritative-server.md](docs/authoritative-server.md). A full in-app
-lobby/ready UI and deeper co-op polish are the next phase; reconnect and
-respawn-at-fire are implemented for dedicated authoritative sessions. See
-[docs/refactor-plan.md](docs/refactor-plan.md) for the phased plan; Phases 1–6c
-are complete, 6b (lobby/polish) is next.
+**2-player co-op is playable** in two modes:
+
+- **Dedicated authoritative** (`eee_server` + two `--join` clients): server-owned
+  60 Hz simulation, snapshots, prediction/interpolation, server inventory,
+  respawn/reconnect, rate limits/auth, and an in-app **lobby** where both players
+  choose a class and ready up.
+- **LAN listen-host** (`--host`): deterministic `LockstepSession` over TCP with
+  command queues, 3-tick delay, checksums and desync detection. The host still
+  auto-starts; the lobby handshake is dedicated-server only.
+
+See [docs/authoritative-server.md](docs/authoritative-server.md) and
+[docs/refactor-plan.md](docs/refactor-plan.md). Native TLS, matchmaking/NAT and
+UDP remain.
 
 ## What is here
 
@@ -283,6 +284,11 @@ the next polish phase. Single-player is unchanged.
 ./build/eee_demo --join=YOUR_SERVER_HOST:27015 --password=our-secret --class=archer
 ```
 
+Both dedicated clients enter the **co-op lobby** after connecting. Choose a
+class with W/S, then press Enter to ready; the server starts the run once both
+players are ready. `--class` is the initial lobby selection. Headless clients
+(`--headless`) ready automatically for smoke tests.
+
 `eee_server` is a **dedicated authoritative server**:
 it assigns player IDs, exchanges class choices, sends `StartRun`, applies
 clients' inputs to an authoritative `RpgGame`, and sends snapshots/ticks.
@@ -304,8 +310,7 @@ Enter equip/use, X drop) operates while the simulation keeps running. Add
 > loopback binding and TLS termination tooling. Dedicated clients stop simulating,
 > render server state, send action requests, predict local movement, and
 > interpolate remote entities. Native TLS and matchmaking/NAT remain. See
-> [docs/authoritative-server.md](docs/authoritative-server.md). Do not describe
-> the current relay as a fully authoritative server.
+> [docs/authoritative-server.md](docs/authoritative-server.md).
 
 Internet requirements and caveats:
 
@@ -317,8 +322,11 @@ Internet requirements and caveats:
   not TLS-grade cryptography. For hostile networks, use the included TLS
   terminator (`scripts/tls_proxy.py`, see `docs/tls.md`) or a VPN, bind the game
   server to loopback (`--bind=127.0.0.1`), and expose only the TLS port.
-- NAT traversal, matchmaking, relay authentication and authoritative server
-  simulation are not implemented yet.
+- Implemented: authoritative simulation, snapshots, inventory ownership,
+  prediction/interpolation, reconnect/resume, rate limits, shared-secret auth,
+  dedicated lobby/ready, loopback binding and TLS termination.
+- Not implemented: native in-game TLS, matchmaking/server directory, NAT
+  traversal, UDP transport, and a listen-host lobby.
 
 ## Status
 
@@ -327,5 +335,6 @@ Internet requirements and caveats:
   logic/render separation, unit tests, mock-device renderer tests, CTest.
 - Metal/OpenGL compile; GPU execution needs a desktop with a working GPU (the
   development environment used here has none).
-- Multiplayer: not implemented (see above).
+- Multiplayer: dedicated authoritative server + LAN listen-host co-op are
+  implemented; native TLS/matchmaking/NAT remain (see above).
 

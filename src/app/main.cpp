@@ -832,6 +832,200 @@ void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
 
 } // namespace
 
+struct LobbyResult {
+    bool ok = false;
+    net::StartRun start{};
+};
+
+// Pre-game lobby for the dedicated server. The server owns the start decision:
+// it begins the run once both clients report Ready. Headless clients ready up
+// automatically so the smoke tests keep working.
+LobbyResult runCoopLobby(net::TcpTransport& transport, net::ConnectionId connection,
+                         platform::IWindow& window, render::Renderer& renderer,
+                         core::PlayerId localPlayerId, logic::ClassId& localClass,
+                         bool headless, core::i32 width, core::i32 height) {
+    LobbyResult result;
+    core::InputState input;
+    window.setMouseCapture(false);
+
+    constexpr logic::ClassId kClasses[] = {logic::ClassId::Warrior, logic::ClassId::Archer,
+                                           logic::ClassId::Mage};
+    constexpr core::i32 kClassCount = 3;
+
+    core::i32 selection = static_cast<core::i32>(localClass);
+    if (selection < 0 || selection >= kClassCount) selection = 0;
+    bool localReady = false;
+    bool remoteKnown = false;
+    logic::ClassId remoteClass = logic::ClassId::Warrior;
+    net::LobbyState lobby{};
+
+    auto sendChoice = [&]() {
+        net::Message message;
+        message.type = net::MessageType::ClassChoice;
+        message.payload = net::ClassChoice{static_cast<core::u8>(selection)};
+        return sendMessage(transport, connection, message);
+    };
+    auto sendReady = [&](bool ready) {
+        net::Message message;
+        message.type = net::MessageType::Ready;
+        message.payload = net::Ready{ready};
+        return sendMessage(transport, connection, message);
+    };
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+    while (!window.shouldClose() && std::chrono::steady_clock::now() < deadline) {
+        if (!window.pollEvents(input)) {
+            return result;
+        }
+
+        for (;;) {
+            auto bytes = transport.receive(connection);
+            if (!bytes.has_value()) break;
+            net::Message message;
+            if (!net::decode(*bytes, message)) {
+                core::logError("lobby: malformed server message");
+                return result;
+            }
+            if (message.type == net::MessageType::StartRun) {
+                result.start = std::get<net::StartRun>(message.payload);
+                result.ok = true;
+                return result;
+            }
+            if (message.type == net::MessageType::LobbyState) {
+                lobby = std::get<net::LobbyState>(message.payload);
+                remoteKnown = true;
+                remoteClass = static_cast<logic::ClassId>(
+                    localPlayerId == core::PlayerId::P0 ? lobby.clientClass : lobby.hostClass);
+                if (remoteClass != logic::ClassId::Warrior &&
+                    remoteClass != logic::ClassId::Archer &&
+                    remoteClass != logic::ClassId::Mage) {
+                    remoteClass = logic::ClassId::Warrior;
+                }
+            } else if (message.type == net::MessageType::Disconnect) {
+                core::logError("lobby: server closed the session");
+                return result;
+            }
+        }
+
+        if (!transport.isConnected(connection)) {
+            core::logError("lobby: connection lost");
+            return result;
+        }
+
+        if (headless) {
+            if (!localReady) {
+                localReady = sendReady(true);
+            }
+        } else {
+            if (input.wasPressed(core::Key::Up) || input.wasPressed('W')) {
+                selection = (selection + kClassCount - 1) % kClassCount;
+                platform::playSound(core::SoundId::MenuMove);
+                sendChoice();
+            }
+            if (input.wasPressed(core::Key::Down) || input.wasPressed('S')) {
+                selection = (selection + 1) % kClassCount;
+                platform::playSound(core::SoundId::MenuMove);
+                sendChoice();
+            }
+            if (input.wasPressed(core::Key::Enter) && !localReady) {
+                localReady = sendReady(true);
+                platform::playSound(core::SoundId::MenuSelect);
+            }
+            if (input.wasPressed(core::Key::Backspace) && localReady) {
+                localReady = false;
+                sendReady(false);
+                platform::playSound(core::SoundId::MenuSelect);
+            }
+            if (input.wasPressed(core::Key::Escape)) {
+                return result;
+            }
+
+            scene::SceneSnapshot snapshot;
+            snapshot.clearColor = {0.02f, 0.03f, 0.06f, 1.0f};
+            const core::f32 ui = std::max(2.0f, static_cast<core::f32>(height) / 300.0f);
+            const core::Vec2 center{static_cast<core::f32>(width) * 0.5f,
+                                    static_cast<core::f32>(height) * 0.5f};
+            const core::f32 panelW = std::min(static_cast<core::f32>(width) - ui * 40.0f,
+                                              ui * 500.0f);
+            const core::f32 panelH = std::min(static_cast<core::f32>(height) - ui * 40.0f,
+                                              ui * 390.0f);
+            render::appendOverlayRect(snapshot, center,
+                                      {static_cast<core::f32>(width),
+                                       static_cast<core::f32>(height)},
+                                      {0.0f, 0.0f, 0.0f, 0.66f});
+            render::appendOverlayRect(snapshot, center, {panelW, panelH}, kPanel);
+            appendBorder(snapshot, center, {panelW, panelH}, ui * 1.2f, kBorder);
+
+            const core::f32 top = center.y + panelH * 0.5f - ui * 22.0f;
+            render::appendDebugTextCentered(snapshot, "CO-OP LOBBY", center.x, top, ui * 1.8f,
+                                            kGold);
+            char line[192];
+            std::snprintf(line, sizeof(line), "YOU ARE PLAYER P%d",
+                          static_cast<int>(localPlayerId));
+            render::appendDebugTextCentered(snapshot, line, center.x, top - ui * 24.0f, ui * 0.8f,
+                                            kDim);
+
+            core::f32 y = top - ui * 48.0f;
+            for (core::i32 i = 0; i < kClassCount; ++i) {
+                const logic::ClassDef& cls = logic::classDef(kClasses[i]);
+                const bool selected = i == selection;
+                std::string text = selected ? "> " : "  ";
+                text += cls.name;
+                if (selected) text += " <";
+                render::appendDebugTextCentered(snapshot, text, center.x, y, ui * 1.05f,
+                                                selected ? kGold : kDim);
+                y -= ui * 18.0f;
+            }
+
+            const logic::ClassDef& selectedClass = logic::classDef(kClasses[selection]);
+            y -= ui * 4.0f;
+            std::snprintf(line, sizeof(line), "HP %d   MANA %d   DAMAGE %d   %s",
+                          static_cast<int>(selectedClass.health),
+                          static_cast<int>(selectedClass.mana),
+                          static_cast<int>(selectedClass.damage),
+                          selectedClass.ranged ? "RANGED" : "MELEE");
+            render::appendDebugTextCentered(snapshot, line, center.x, y, ui * 0.82f, kDim);
+            y -= ui * 20.0f;
+            render::appendDebugTextCentered(snapshot, selectedClass.description, center.x, y,
+                                            ui * 0.78f, kWhite);
+
+            y -= ui * 32.0f;
+            if (remoteKnown) {
+                const bool remoteReady = localPlayerId == core::PlayerId::P0
+                                             ? lobby.clientReady
+                                             : lobby.hostReady;
+                std::snprintf(line, sizeof(line), "PEER: %s   %s",
+                              logic::classDef(remoteClass).name,
+                              remoteReady ? "READY" : "CHOOSING");
+            } else {
+                std::snprintf(line, sizeof(line), "PEER: WAITING...");
+            }
+            render::appendDebugTextCentered(snapshot, line, center.x, y, ui * 0.85f, kDim);
+            y -= ui * 18.0f;
+            if (localReady) {
+                render::appendDebugTextCentered(snapshot,
+                                                "READY — WAITING FOR SERVER TO START",
+                                                center.x, y, ui * 0.9f, kGold);
+            } else {
+                render::appendDebugTextCentered(snapshot, "W/S CLASS   ENTER READY",
+                                                center.x, y, ui * 0.9f, kWhite);
+            }
+            render::appendDebugTextCentered(
+                snapshot, "ESC LEAVE   BACKSPACE CANCEL READY", center.x,
+                center.y - panelH * 0.5f + ui * 10.0f, ui * 0.75f, kDim);
+
+            renderer.renderFrame(snapshot);
+            input.endFrame();
+        }
+
+        if (headless) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    return result;
+}
+
 int main(int argc, char** argv) {
     Options options;
     if (!parseOptions(argc, argv, options)) {
@@ -1085,8 +1279,10 @@ int main(int argc, char** argv) {
 
             std::optional<net::StartRun> startRun;
             core::u8 assignedPlayer = 1; // listen-host default
+            bool gotWelcome = false;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-            while (!startRun.has_value() && std::chrono::steady_clock::now() < deadline) {
+            while (!gotWelcome && !startRun.has_value() &&
+                   std::chrono::steady_clock::now() < deadline) {
                 auto message = waitForMessage(*coopNet, coopConnection, 500);
                 if (!message.has_value()) {
                     continue;
@@ -1096,22 +1292,34 @@ int main(int argc, char** argv) {
                     assignedPlayer = welcome.playerId;
                     coopResumeToken = welcome.resumeToken;
                     coopSessionId = welcome.sessionId;
+                    gotWelcome = true;
                 } else if (message->type == net::MessageType::StartRun) {
                     startRun = std::get<net::StartRun>(message->payload);
                     authoritativeServer = startRun->authoritative;
                 } else if (message->type == net::MessageType::Disconnect) {
                     core::logError("co-op: server rejected the connection (auth or lobby)");
-                    break;
+                    return fail(1);
                 }
             }
-            if (!startRun.has_value()) {
-                core::logError("co-op: host did not start the run");
+            if (!gotWelcome && !startRun.has_value()) {
+                core::logError("co-op: server did not complete the handshake");
                 return fail(1);
+            }
+            localPlayerId =
+                assignedPlayer == 0 ? core::PlayerId::P0 : core::PlayerId::P1;
+            if (!startRun.has_value()) {
+                LobbyResult lobby = runCoopLobby(*coopNet, coopConnection, *window, renderer,
+                                                 localPlayerId, localClass, headless,
+                                                 framebufferWidth, framebufferHeight);
+                if (!lobby.ok) {
+                    core::logError("co-op: lobby closed before the run started");
+                    return fail(1);
+                }
+                startRun = lobby.start;
+                authoritativeServer = startRun->authoritative;
             }
             game.beginCoop(static_cast<logic::ClassId>(startRun->hostClass),
                            static_cast<logic::ClassId>(startRun->clientClass));
-            localPlayerId =
-                assignedPlayer == 0 ? core::PlayerId::P0 : core::PlayerId::P1;
             core::logf(core::LogLevel::Info,
                        "co-op: joined (host=%s client=%s)",
                        logic::classDef(static_cast<logic::ClassId>(startRun->hostClass)).name,

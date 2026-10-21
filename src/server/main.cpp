@@ -58,7 +58,7 @@ bool send(TcpTransport& transport, ConnectionId connection, const Message& messa
 
 void printUsage() {
     std::printf(
-        "EEEsSA dedicated relay server\n"
+        "EEEsSA dedicated authoritative server\n"
         "\n"
         "Usage: eee_server [options]\n"
         "  --port=<n>       TCP listen port (default 27015)\n"
@@ -67,8 +67,8 @@ void printUsage() {
         "  --once           Exit after one two-player session\n"
         "  --help           Show this message\n"
         "\n"
-        "This is a relay, not an authoritative server. Clients must use the same\n"
-        "build. Internet play requires a reachable public IP and TCP port forwarding.\n"
+        "Clients must use the same build. The server owns the simulation. Internet\n"
+        "play requires a reachable public IP and TCP port forwarding.\n"
         "The protocol is plaintext and unauthenticated; do not expose it publicly\n"
         "without a firewall/VPN or an authentication layer.\n");
 }
@@ -189,12 +189,62 @@ int main(int argc, char** argv) {
             if (once) return 1;
             continue;
         }
-        if (!handshakeOk) {
-            logf(LogLevel::Warning, "server: lobby handshake failed");
+        std::array<bool, 2> ready{false, false};
+        bool lobbyDirty = true;
+        auto broadcastLobby = [&]() {
+            Message lobby;
+            lobby.type = MessageType::LobbyState;
+            lobby.payload = eee::net::LobbyState{classes[0], classes[1], ready[0], ready[1],
+                                                 0xC0FFEEull};
+            for (ConnectionId id : connections) {
+                send(transport, id, lobby);
+            }
+            lobbyDirty = false;
+        };
+
+        const auto lobbyDeadline =
+            std::chrono::steady_clock::now() + std::chrono::minutes(10);
+        while (!(ready[0] && ready[1]) &&
+               std::chrono::steady_clock::now() < lobbyDeadline) {
+            if (lobbyDirty) {
+                broadcastLobby();
+            }
+            for (int i = 0; i < 2; ++i) {
+                if (!transport.isConnected(connections[i])) {
+                    handshakeOk = false;
+                    break;
+                }
+                while (auto bytes = transport.receive(connections[i])) {
+                    Message incoming;
+                    if (!eee::net::decode(*bytes, incoming)) {
+                        handshakeOk = false;
+                        break;
+                    }
+                    if (incoming.type == MessageType::ClassChoice) {
+                        classes[i] = std::get<eee::net::ClassChoice>(incoming.payload).classId;
+                        lobbyDirty = true;
+                    } else if (incoming.type == MessageType::Ready) {
+                        ready[i] = std::get<eee::net::Ready>(incoming.payload).ready;
+                        lobbyDirty = true;
+                    } else if (incoming.type == MessageType::Disconnect) {
+                        handshakeOk = false;
+                        break;
+                    }
+                }
+            }
+            if (!handshakeOk) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        if (!handshakeOk || !(ready[0] && ready[1])) {
+            logf(LogLevel::Warning, "server: lobby did not start (ready P0=%d P1=%d)",
+                 ready[0], ready[1]);
             for (ConnectionId id : connections) transport.close(id);
             if (once) return 1;
             continue;
         }
+        broadcastLobby();
+        logf(LogLevel::Info, "server: lobby ready (P0 class=%u, P1 class=%u)",
+             static_cast<unsigned>(classes[0]), static_cast<unsigned>(classes[1]));
 
         Message start;
         start.type = MessageType::StartRun;

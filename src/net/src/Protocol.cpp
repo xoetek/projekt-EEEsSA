@@ -186,6 +186,8 @@ std::vector<core::u8> encode(const Message& message) {
                 writer.u64(payload.resumeToken);
             } else if constexpr (std::is_same_v<T, LobbyState>) {
                 writer.u8(payload.hostClass);
+                writer.u8(payload.clientClass);
+                writer.u8(payload.hostReady ? 1 : 0);
                 writer.u8(payload.clientReady ? 1 : 0);
                 writer.u64(payload.seed);
             } else if constexpr (std::is_same_v<T, ClassChoice>) {
@@ -217,6 +219,8 @@ std::vector<core::u8> encode(const Message& message) {
                 writer.u32(payload.sessionId);
                 writer.u8(payload.playerId);
                 writer.u64(payload.token);
+            } else if constexpr (std::is_same_v<T, Ready>) {
+                writer.u8(payload.ready ? 1 : 0);
             } else if constexpr (std::is_same_v<T, ActionRequest>) {
                 writer.u8(payload.playerId);
                 writer.u8(payload.action);
@@ -331,11 +335,15 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
     }
     case MessageType::LobbyState: {
         LobbyState payload;
-        core::u8 ready = 0;
-        if (!reader.u8(payload.hostClass) || !reader.u8(ready) || !reader.u64(payload.seed)) {
+        core::u8 hostReady = 0;
+        core::u8 clientReady = 0;
+        if (!reader.u8(payload.hostClass) || !reader.u8(payload.clientClass) ||
+            !reader.u8(hostReady) || !reader.u8(clientReady) ||
+            !reader.u64(payload.seed)) {
             return false;
         }
-        payload.clientReady = ready != 0;
+        payload.hostReady = hostReady != 0;
+        payload.clientReady = clientReady != 0;
         message.payload = payload;
         break;
     }
@@ -413,6 +421,14 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
             !reader.u16(payload.index)) {
             return false;
         }
+        message.payload = payload;
+        break;
+    }
+    case MessageType::Ready: {
+        Ready payload;
+        core::u8 ready = 0;
+        if (!reader.u8(ready)) return false;
+        payload.ready = ready != 0;
         message.payload = payload;
         break;
     }
@@ -529,6 +545,7 @@ const char* messageTypeName(MessageType type) {
     case MessageType::Snapshot: return "Snapshot";
     case MessageType::ActionRequest: return "ActionRequest";
     case MessageType::ResumeRequest: return "ResumeRequest";
+    case MessageType::Ready: return "Ready";
     }
     return "Unknown";
 }
