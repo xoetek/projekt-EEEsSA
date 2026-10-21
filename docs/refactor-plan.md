@@ -131,7 +131,9 @@ phase is meant to be shippable with the game still playable in single-player.
   - Local player movement prediction/reconciliation in `AuthoritativeClient`.
   - Pending input replay at 60 Hz, snap vs smooth corrections, local-only scope.
   - Remote interpolation for other player/enemies/projectiles/loot is complete.
-- **A6 — Zones/reconnect: next.**
+- **A6 — Zones/reconnect: ✅ complete.**
+  - Deterministic per-zone static worlds, server-driven zone changes, respawn-at-fire and 20s reconnect grace with resume tokens.
+- **A7 — Security/robustness: next.**
 
 ---
 

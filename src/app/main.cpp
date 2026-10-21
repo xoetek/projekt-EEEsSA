@@ -746,8 +746,8 @@ void appendSettings(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
 
 void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
                     core::u64 sessionTick, bool desynced, bool disconnected,
-                    bool localDead, core::i32 selection, core::f32 width,
-                    core::f32 height) {
+                    bool localDead, bool canReconnect, core::i32 selection,
+                    core::f32 width, core::f32 height) {
     const core::f32 ui = std::max(2.0f, height / 300.0f);
     const core::Vec2 center{width * 0.5f, height * 0.5f};
     const core::f32 panelW = std::min(width - ui * 40.0f, ui * 380.0f);
@@ -756,10 +756,10 @@ void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
     render::appendOverlayRect(snapshot, center, {panelW, panelH}, kPanel);
     appendBorder(snapshot, center, {panelW, panelH}, ui * 1.2f, kBorder);
 
-    const char* title = desynced ? "DESYNC"
-                        : disconnected ? "PEER LEFT"
-                        : localDead   ? "YOU DIED"
-                                      : "CO-OP MENU";
+    const char* title = desynced     ? "DESYNC"
+                        : disconnected ? "CONNECTION LOST"
+                        : localDead    ? "YOU DIED"
+                                       : "CO-OP MENU";
     render::appendDebugTextCentered(snapshot, title, center.x,
                                     center.y + panelH * 0.5f - ui * 24.0f, ui * 1.6f,
                                     (desynced || localDead) ? kEnemyHealth : kGold);
@@ -784,12 +784,26 @@ void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
     render::appendDebugTextCentered(snapshot, line, center.x,
                                     center.y + panelH * 0.5f - ui * 68.0f, ui * 0.8f, kDim);
 
-    if (desynced || disconnected) {
+    if (desynced) {
         render::appendDebugTextCentered(snapshot, "> LEAVE <", center.x, center.y, ui, kGold);
     } else {
-        const char* options[] = {localDead ? "RESPAWN AT FIRE" : "RESUME", "LEAVE"};
+        const char* options[2] = {"", "LEAVE"};
+        core::i32 optionCount = 1;
+        if (disconnected) {
+            if (canReconnect) {
+                options[0] = "RECONNECT";
+                optionCount = 2;
+            } else {
+                options[0] = "LEAVE";
+                optionCount = 1;
+            }
+        } else {
+            options[0] = localDead ? "RESPAWN AT FIRE" : "RESUME";
+            optionCount = 2;
+        }
+
         core::f32 y = center.y + ui * 10.0f;
-        for (core::i32 i = 0; i < 2; ++i) {
+        for (core::i32 i = 0; i < optionCount; ++i) {
             const bool selected = i == selection;
             std::string text = selected ? "> " : "  ";
             text += options[i];
@@ -797,6 +811,10 @@ void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
             render::appendDebugTextCentered(snapshot, text, center.x, y, ui,
                                             selected ? kGold : kDim);
             y -= ui * 22.0f;
+        }
+        if (disconnected && canReconnect) {
+            render::appendDebugTextCentered(snapshot, "SERVER HOLDS THE SLOT FOR 20S", center.x,
+                                            center.y - ui * 22.0f, ui * 0.7f, kDim);
         }
     }
     render::appendDebugTextCentered(snapshot, "ESC RESUME   ENTER CONFIRM", center.x,
@@ -928,6 +946,10 @@ int main(int argc, char** argv) {
     bool coopInventoryOpen = false;
     core::i32 coopInventorySelection = 0;
     bool coopWasDead = false;
+    std::string coopJoinHost;
+    core::u16 coopJoinPort = 0;
+    core::u64 coopResumeToken = 0;
+    core::u32 coopSessionId = 0;
     bool coopDesync = false;
 
     auto fail = [&](int code) {
@@ -1000,6 +1022,8 @@ int main(int argc, char** argv) {
                 port = static_cast<core::u16>(std::atoi(host.substr(colon + 1).c_str()));
                 host = host.substr(0, colon);
             }
+            coopJoinHost = host;
+            coopJoinPort = port;
             if (host.empty() || port == 0) {
                 core::logError("co-op: invalid --join address");
                 return fail(2);
@@ -1035,7 +1059,10 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 if (message->type == net::MessageType::Welcome) {
-                    assignedPlayer = std::get<net::Welcome>(message->payload).playerId;
+                    const auto& welcome = std::get<net::Welcome>(message->payload);
+                    assignedPlayer = welcome.playerId;
+                    coopResumeToken = welcome.resumeToken;
+                    coopSessionId = welcome.sessionId;
                 } else if (message->type == net::MessageType::StartRun) {
                     startRun = std::get<net::StartRun>(message->payload);
                     authoritativeServer = startRun->authoritative;
@@ -1195,6 +1222,60 @@ int main(int argc, char** argv) {
 
             bool localDead = game.player(localPlayerId).playerDead;
             bool leave = false;
+
+            auto tryReconnect = [&]() -> bool {
+                if (!authoritativeMode || coopJoinHost.empty() || coopJoinPort == 0 ||
+                    coopResumeToken == 0) {
+                    return false;
+                }
+                auto newNet = std::make_unique<net::TcpTransport>();
+                std::optional<net::ConnectionId> connection;
+                for (int attempt = 0; attempt < 30 && !connection.has_value(); ++attempt) {
+                    connection = newNet->connect(coopJoinHost, coopJoinPort);
+                    if (!connection.has_value()) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                }
+                if (!connection.has_value()) {
+                    core::logWarning("co-op: reconnect failed (connect)");
+                    return false;
+                }
+
+                net::Message request;
+                request.type = net::MessageType::ResumeRequest;
+                request.payload = net::ResumeRequest{
+                    coopSessionId, static_cast<core::u8>(localPlayerId), coopResumeToken};
+                if (!sendMessage(*newNet, *connection, request)) {
+                    core::logWarning("co-op: reconnect failed (resume request)");
+                    return false;
+                }
+
+                auto newClient = std::make_unique<session::AuthoritativeClient>(
+                    *newNet, *connection, localPlayerId, 3);
+                const auto deadline =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                while (std::chrono::steady_clock::now() < deadline &&
+                       newClient->snapshotsApplied() == 0) {
+                    newClient->poll(game);
+                    if (newClient->disconnected()) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (newClient->snapshotsApplied() == 0) {
+                    core::logWarning("co-op: reconnect failed (no snapshot)");
+                    newNet->closeAll();
+                    return false;
+                }
+
+                authoritativeClient.reset();
+                if (coopNet) coopNet->closeAll();
+                coopNet = std::move(newNet);
+                coopConnection = *connection;
+                authoritativeClient = std::move(newClient);
+                coopDesync = false;
+                core::logInfo("co-op: reconnected to authoritative server");
+                return true;
+            };
+
             if (localDead && coopInventoryOpen) {
                 coopInventoryOpen = false;
             }
@@ -1219,10 +1300,12 @@ int main(int argc, char** argv) {
                     }
                     coopInventorySelection = core::clamp(coopInventorySelection, 0, count - 1);
                     if (input.wasPressed(core::Key::Enter)) {
-                        authoritativeClient->sendAction(0, static_cast<core::u16>(coopInventorySelection));
+                        authoritativeClient->sendAction(
+                            0, static_cast<core::u16>(coopInventorySelection));
                     }
                     if (input.wasPressed('X')) {
-                        authoritativeClient->sendAction(1, static_cast<core::u16>(coopInventorySelection));
+                        authoritativeClient->sendAction(
+                            1, static_cast<core::u16>(coopInventorySelection));
                     }
                 }
                 if (authoritativeClient && authoritativeClient->disconnected()) {
@@ -1230,20 +1313,47 @@ int main(int argc, char** argv) {
                     coopMenuOpen = true;
                 }
             } else {
-                if (input.wasPressed(core::Key::Escape)) {
+                if (input.wasPressed(core::Key::Escape) && !localDead) {
                     coopMenuOpen = !coopMenuOpen;
                     coopMenuSelection = 0;
                 }
-                if (authoritativeMode && !coopMenuOpen && input.wasPressed('I')) {
+                if (authoritativeMode && !coopMenuOpen && !localDead && input.wasPressed('I')) {
                     coopInventoryOpen = true;
                     coopInventorySelection = 0;
                 }
             }
+
             if (coopMenuOpen) {
-                const bool failed = coopDesync ||
-                                   (authoritativeMode ? authoritativeClient->disconnected()
-                                                     : coopSession->disconnected());
-                if (!failed) {
+                const bool sessionDisconnected =
+                    authoritativeMode ? authoritativeClient->disconnected()
+                                      : coopSession->disconnected();
+                const bool canReconnect = authoritativeMode && !coopDesync &&
+                                          coopResumeToken != 0 && !coopJoinHost.empty();
+                if (coopDesync) {
+                    if (input.wasPressed(core::Key::Enter)) {
+                        leave = true;
+                    }
+                } else if (sessionDisconnected) {
+                    const core::i32 count = canReconnect ? 2 : 1;
+                    if (input.wasPressed(core::Key::Up) || input.wasPressed('W')) {
+                        coopMenuSelection = (coopMenuSelection + count - 1) % count;
+                    }
+                    if (input.wasPressed(core::Key::Down) || input.wasPressed('S')) {
+                        coopMenuSelection = (coopMenuSelection + 1) % count;
+                    }
+                    coopMenuSelection = core::clamp(coopMenuSelection, 0, count - 1);
+                    if (input.wasPressed(core::Key::Enter)) {
+                        if (canReconnect && coopMenuSelection == 0) {
+                            if (tryReconnect()) {
+                                coopMenuOpen = false;
+                                coopMenuSelection = 0;
+                                localDead = game.player(localPlayerId).playerDead;
+                            }
+                        } else {
+                            leave = true;
+                        }
+                    }
+                } else if (localDead) {
                     if (input.wasPressed(core::Key::Up) || input.wasPressed('W')) {
                         coopMenuSelection = (coopMenuSelection + 1) % 2;
                     }
@@ -1251,22 +1361,28 @@ int main(int argc, char** argv) {
                         coopMenuSelection = (coopMenuSelection + 1) % 2;
                     }
                     if (input.wasPressed(core::Key::Enter)) {
-                        if (localDead) {
-                            if (coopMenuSelection == 0) {
-                                if (authoritativeMode) {
-                                    authoritativeClient->sendAction(2, 0);
-                                }
-                            } else {
-                                leave = true;
+                        if (coopMenuSelection == 0) {
+                            if (authoritativeMode) {
+                                authoritativeClient->sendAction(2, 0);
                             }
-                        } else if (coopMenuSelection == 0) {
+                        } else {
+                            leave = true;
+                        }
+                    }
+                } else {
+                    if (input.wasPressed(core::Key::Up) || input.wasPressed('W')) {
+                        coopMenuSelection = (coopMenuSelection + 1) % 2;
+                    }
+                    if (input.wasPressed(core::Key::Down) || input.wasPressed('S')) {
+                        coopMenuSelection = (coopMenuSelection + 1) % 2;
+                    }
+                    if (input.wasPressed(core::Key::Enter)) {
+                        if (coopMenuSelection == 0) {
                             coopMenuOpen = false;
                         } else {
                             leave = true;
                         }
                     }
-                } else if (input.wasPressed(core::Key::Enter)) {
-                    leave = true;
                 }
             }
             if (leave) {
@@ -1420,8 +1536,11 @@ int main(int argc, char** argv) {
             const bool sessionDisconnected =
                 authoritativeMode ? authoritativeClient->disconnected()
                                   : coopSession->disconnected();
+            const bool canReconnect = authoritativeMode && !coopDesync &&
+                                      coopResumeToken != 0 && !coopJoinHost.empty();
             appendCoopMenu(snapshot, game, sessionTick, coopDesync, sessionDisconnected,
-                           game.player(localPlayerId).playerDead, coopMenuSelection,
+                           game.player(localPlayerId).playerDead, canReconnect,
+                           coopMenuSelection,
                            static_cast<core::f32>(framebufferWidth),
                            static_cast<core::f32>(framebufferHeight));
         }

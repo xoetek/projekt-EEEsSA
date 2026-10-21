@@ -74,8 +74,8 @@ combat. A dedicated relay server (`eee_server`) supports remote/internet
 connections over TCP, and a listen-host mode (`--host`) is available for LAN.
 Server-authoritative play is the next architecture migration; see
 [docs/authoritative-server.md](docs/authoritative-server.md). A full in-app
-lobby/ready UI, co-op inventory, and death/reconnect flow are the next polish
-phase. See
+lobby/ready UI and deeper co-op polish are the next phase; reconnect and
+respawn-at-fire are implemented for dedicated authoritative sessions. See
 [docs/refactor-plan.md](docs/refactor-plan.md) for the phased plan; Phases 1–6c
 are complete, 6b (lobby/polish) is next.
 
@@ -289,11 +289,12 @@ replicated in snapshots; the co-op inventory UI (`I`, arrows/WASD select,
 Enter equip/use, X drop) operates while the simulation keeps running. Add
 `--once` to exit after one session (used by CTest).
 
-> **A1–A5 are implemented**: the server owns/validates the simulation, releases
-> authoritative ticks, replicates world snapshots, and owns inventory/action
-> results; dedicated clients stop simulating, render server state, send action
-> requests, locally predict their own movement, and interpolate remote entities.
-> Zone handshakes and reconnect are **not** implemented yet. See
+> **A1–A6 are implemented**: the server owns/validates the simulation, releases
+> authoritative ticks, replicates world snapshots, owns inventory/action results,
+> uses deterministic per-zone worlds, and supports respawn plus a 20-second
+> reconnect grace with resume tokens. Dedicated clients stop simulating, render
+> server state, send action requests, predict local movement, and interpolate
+> remote entities. See
 > [docs/authoritative-server.md](docs/authoritative-server.md). Do not describe
 > the current relay as a fully authoritative server.
 

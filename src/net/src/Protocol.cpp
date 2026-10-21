@@ -182,6 +182,7 @@ std::vector<core::u8> encode(const Message& message) {
                 writer.u8(payload.playerId);
                 writer.u32(payload.sessionId);
                 writer.u16(payload.tickRate);
+                writer.u64(payload.resumeToken);
             } else if constexpr (std::is_same_v<T, LobbyState>) {
                 writer.u8(payload.hostClass);
                 writer.u8(payload.clientReady ? 1 : 0);
@@ -211,6 +212,10 @@ std::vector<core::u8> encode(const Message& message) {
                 writer.u8(payload.reason);
             } else if constexpr (std::is_same_v<T, ServerTick>) {
                 writer.u64(payload.tick);
+            } else if constexpr (std::is_same_v<T, ResumeRequest>) {
+                writer.u32(payload.sessionId);
+                writer.u8(payload.playerId);
+                writer.u64(payload.token);
             } else if constexpr (std::is_same_v<T, ActionRequest>) {
                 writer.u8(payload.playerId);
                 writer.u8(payload.action);
@@ -318,7 +323,7 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
     case MessageType::Welcome: {
         Welcome payload;
         if (!reader.u8(payload.playerId) || !reader.u32(payload.sessionId) ||
-            !reader.u16(payload.tickRate)) return false;
+            !reader.u16(payload.tickRate) || !reader.u64(payload.resumeToken)) return false;
         message.payload = payload;
         break;
     }
@@ -388,6 +393,15 @@ bool decode(std::span<const core::u8> bytes, Message& out) {
     case MessageType::ServerTick: {
         ServerTick payload;
         if (!reader.u64(payload.tick)) return false;
+        message.payload = payload;
+        break;
+    }
+    case MessageType::ResumeRequest: {
+        ResumeRequest payload;
+        if (!reader.u32(payload.sessionId) || !reader.u8(payload.playerId) ||
+            !reader.u64(payload.token)) {
+            return false;
+        }
         message.payload = payload;
         break;
     }
@@ -512,6 +526,7 @@ const char* messageTypeName(MessageType type) {
     case MessageType::ServerTick: return "ServerTick";
     case MessageType::Snapshot: return "Snapshot";
     case MessageType::ActionRequest: return "ActionRequest";
+    case MessageType::ResumeRequest: return "ResumeRequest";
     }
     return "Unknown";
 }

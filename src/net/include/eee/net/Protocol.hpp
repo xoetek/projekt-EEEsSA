@@ -34,6 +34,7 @@ enum class MessageType : core::u16 {
     ServerTick = 12,
     Snapshot = 13,
     ActionRequest = 14,
+    ResumeRequest = 15,
 };
 
 struct Hello {
@@ -45,6 +46,7 @@ struct Welcome {
     core::u8 playerId = 0;
     core::u32 sessionId = 0;
     core::u16 tickRate = 60;
+    core::u64 resumeToken = 0;
 };
 
 struct LobbyState {
@@ -94,6 +96,12 @@ struct ServerTick {
     core::u64 tick = 0;
 };
 
+struct ResumeRequest {
+    core::u32 sessionId = 0;
+    core::u8 playerId = 0;
+    core::u64 token = 0;
+};
+
 struct ActionRequest {
     core::u8 playerId = 0;
     core::u8 action = 0; // 0 = equip/use, 1 = drop
@@ -102,7 +110,7 @@ struct ActionRequest {
 
 using Payload = std::variant<Hello, Welcome, LobbyState, ClassChoice, StartRun, InputCommand,
                              InputAck, Checksum, Timestamp, Disconnect, ServerTick,
-                             core::WorldSnapshot, ActionRequest>;
+                             core::WorldSnapshot, ActionRequest, ResumeRequest>;
 
 struct Message {
     MessageType type = MessageType::Ping;

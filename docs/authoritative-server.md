@@ -1,6 +1,6 @@
 # Authoritative Server Architecture
 
-Status: **A1–A5 complete: server-owned world/inventory, local prediction and remote interpolation.**
+Status: **A1–A6 complete: authoritative world, inventory, prediction/interpolation, zones and reconnect.**
 Current build: deterministic client lockstep + a TCP relay (`eee_server`) that
 now also owns a **shadow authoritative `RpgGame`**: it applies both clients'
 inputs at a fixed 60 Hz, computes server checksums every 30 ticks and validates
@@ -241,9 +241,13 @@ and static world identity.
 - Camera stays local.
 - Tests: simulated 80–150 ms RTT; no rubber-banding beyond threshold.
 
-### A6 — Zone/story and reconnect
-- Server-driven portal transitions; reconnect with session resume token.
-- Respawn/revive rules owned by server.
+### A6 — Zones, respawn and reconnect ✅
+- ✅ Static worlds are deterministic from the zone index (same geometry/collision on server and clients).
+- ✅ Server-driven zone index in snapshots; clients regenerate the matching static zone.
+- ✅ Death → Respawn at Fire via an authoritative action; P0 respawn clears the death pause.
+- ✅ Reconnect: per-player resume tokens in `Welcome`, `ResumeRequest`, server slot grace of 20s, fresh snapshot on resume.
+- ✅ Client reconnect menu (CONNECT LOST → Reconnect/Leave).
+- ⏳ Reconnect currently requires the server process/session to still be within its 20s grace; no reconnect after session end.
 
 ### A7 — Security hardening
 - TLS/auth, rate limiting, tick-window validation, kick/ban plumbing.

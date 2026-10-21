@@ -116,15 +116,22 @@ int main(int argc, char** argv) {
         }
         logf(LogLevel::Info, "server: second client connected");
 
-        const std::array<ConnectionId, 2> connections{*first, *second};
+        std::array<ConnectionId, 2> connections{*first, *second};
         const eee::core::u32 sessionId = ++sessionCounter;
+        std::array<eee::core::u64, 2> resumeTokens{};
+        for (int i = 0; i < 2; ++i) {
+            resumeTokens[i] = 0x9E3779B97F4A7C15ull ^
+                              (static_cast<eee::core::u64>(sessionId) << 17) ^
+                              static_cast<eee::core::u64>(i + 1);
+        }
 
         std::array<eee::core::u8, 2> classes{0, 0};
         bool handshakeOk = true;
         for (int i = 0; i < 2; ++i) {
             Message welcome;
             welcome.type = MessageType::Welcome;
-            welcome.payload = eee::net::Welcome{static_cast<eee::core::u8>(i), sessionId, 60};
+            welcome.payload = eee::net::Welcome{static_cast<eee::core::u8>(i), sessionId, 60,
+                                                     resumeTokens[i]};
             if (!send(transport, connections[i], welcome)) {
                 handshakeOk = false;
                 break;
@@ -172,6 +179,9 @@ int main(int argc, char** argv) {
         eee::core::u64 snapshotsSent = 0;
         bool authoritativeOk = true;
         bool mismatchLogged = false;
+        std::array<bool, 2> active{true, true};
+        std::array<bool, 2> grace{false, false};
+        std::array<std::chrono::steady_clock::time_point, 2> graceDeadline{};
 
         auto compareChecksum = [&](int client, eee::core::u64 tick, eee::core::u64 hash) {
             const auto server = serverChecksums.find(tick);
@@ -195,10 +205,15 @@ int main(int argc, char** argv) {
                 return false;
             }
             const bool neutralWarmup = authoritativeTick < 3;
-            bool ready = neutralWarmup;
-            if (!ready) {
-                ready = pendingInputs[0].find(authoritativeTick) != pendingInputs[0].end() &&
-                        pendingInputs[1].find(authoritativeTick) != pendingInputs[1].end();
+            bool ready = true;
+            for (int p = 0; p < 2; ++p) {
+                if (active[p] && !neutralWarmup &&
+                    pendingInputs[p].find(authoritativeTick) == pendingInputs[p].end()) {
+                    ready = false;
+                }
+                if (!active[p] && !grace[p]) {
+                    ready = false;
+                }
             }
             if (!ready) {
                 return false;
@@ -219,8 +234,10 @@ int main(int argc, char** argv) {
             Message tickMessage;
             tickMessage.type = MessageType::ServerTick;
             tickMessage.payload = eee::net::ServerTick{authoritativeTick};
-            for (ConnectionId id : connections) {
-                send(transport, id, tickMessage);
+            for (int p = 0; p < 2; ++p) {
+                if (active[p]) {
+                    send(transport, connections[p], tickMessage);
+                }
             }
 
             eee::core::WorldSnapshot snapshot =
@@ -228,8 +245,8 @@ int main(int argc, char** argv) {
             Message snapshotMessage;
             snapshotMessage.type = MessageType::Snapshot;
             snapshotMessage.payload = std::move(snapshot);
-            for (ConnectionId id : connections) {
-                if (send(transport, id, snapshotMessage)) {
+            for (int p = 0; p < 2; ++p) {
+                if (active[p] && send(transport, connections[p], snapshotMessage)) {
                     ++snapshotsSent;
                 }
             }
@@ -247,10 +264,60 @@ int main(int argc, char** argv) {
             return true;
         };
 
-        std::array<bool, 2> active{true, true};
         auto lastSimulation = std::chrono::steady_clock::now();
         eee::core::f32 simulationAccumulator = 0.0f;
-        while (active[0] || active[1]) {
+
+        auto markDisconnected = [&](int p) {
+            if (!active[p]) return;
+            active[p] = false;
+            grace[p] = true;
+            graceDeadline[p] = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            pendingInputs[p].clear();
+            clientChecksums[p].clear();
+            logf(LogLevel::Warning, "server: P%d disconnected; holding slot for 20s", p);
+        };
+
+        while (active[0] || active[1] || grace[0] || grace[1]) {
+            // Accept reconnect attempts while the session is live.
+            while (true) {
+                auto incoming = transport.accept();
+                if (!incoming.has_value()) break;
+
+                auto request = waitForMessage(transport, *incoming, 1500);
+                bool resumed = false;
+                if (request.has_value() && request->type == MessageType::ResumeRequest) {
+                    const auto& resume = std::get<eee::net::ResumeRequest>(request->payload);
+                    const int slot = resume.playerId;
+                    if (resume.sessionId == sessionId && slot >= 0 && slot < 2 &&
+                        !active[slot] && resume.token == resumeTokens[slot]) {
+                        connections[slot] = *incoming;
+                        active[slot] = true;
+                        grace[slot] = false;
+                        pendingInputs[slot].clear();
+                        clientChecksums[slot].clear();
+
+                        Message welcome;
+                        welcome.type = MessageType::Welcome;
+                        welcome.payload = eee::net::Welcome{static_cast<eee::core::u8>(slot),
+                                                           sessionId, 60,
+                                                           resumeTokens[slot]};
+                        send(transport, connections[slot], welcome);
+
+                        Message snapshot;
+                        snapshot.type = MessageType::Snapshot;
+                        snapshot.payload =
+                            authoritative.captureNetworkSnapshot(authoritativeTick);
+                        send(transport, connections[slot], snapshot);
+                        resumed = true;
+                        logf(LogLevel::Info, "server: P%d reconnected at tick %llu", slot,
+                             static_cast<unsigned long long>(authoritativeTick));
+                    }
+                }
+                if (!resumed) {
+                    transport.close(*incoming);
+                }
+            }
+
             for (int i = 0; i < 2; ++i) {
                 if (!active[i]) continue;
                 while (true) {
@@ -258,12 +325,11 @@ int main(int argc, char** argv) {
                     if (!bytes.has_value()) break;
                     Message message;
                     if (!eee::net::decode(*bytes, message)) {
-                        active[i] = false;
+                        markDisconnected(i);
                         break;
                     }
-                    const int other = 1 - i;
                     if (message.type == MessageType::Disconnect) {
-                        active[i] = false;
+                        markDisconnected(i);
                         break;
                     }
                     if (message.type == MessageType::InputCommand) {
@@ -293,27 +359,38 @@ int main(int argc, char** argv) {
                         message.type == MessageType::Checksum ||
                         message.type == MessageType::Ping ||
                         message.type == MessageType::Pong) {
+                        const int other = 1 - i;
                         if (active[other]) {
                             transport.send(connections[other], *bytes);
                         }
                     }
                 }
                 if (active[i] && !transport.isConnected(connections[i])) {
-                    active[i] = false;
+                    markDisconnected(i);
                 }
             }
 
-            if ((active[0] && !active[1]) || (active[1] && !active[0])) {
-                const int remaining = active[0] ? 0 : 1;
-                Message bye;
-                bye.type = MessageType::Disconnect;
-                bye.payload = eee::net::Disconnect{1};
-                send(transport, connections[remaining], bye);
-                active[remaining] = false;
-            }
             const auto now = std::chrono::steady_clock::now();
-            const float elapsed = std::chrono::duration<float>(now - lastSimulation).count();
-            lastSimulation = now;
+            for (int p = 0; p < 2; ++p) {
+                if (!active[p] && grace[p] && now >= graceDeadline[p]) {
+                    logf(LogLevel::Warning, "server: P%d reconnect grace expired", p);
+                    grace[p] = false;
+                    for (int q = 0; q < 2; ++q) {
+                        if (active[q]) {
+                            Message bye;
+                            bye.type = MessageType::Disconnect;
+                            bye.payload = eee::net::Disconnect{2};
+                            send(transport, connections[q], bye);
+                            active[q] = false;
+                        }
+                    }
+                }
+            }
+
+            const auto simNow = std::chrono::steady_clock::now();
+            const float elapsed =
+                std::chrono::duration<float>(simNow - lastSimulation).count();
+            lastSimulation = simNow;
             simulationAccumulator += std::min(elapsed, 0.25f);
             int steps = 0;
             while (simulationAccumulator >= 1.0f / 60.0f && steps < 5) {

@@ -164,6 +164,7 @@ void LockstepSession::handleMessage(const net::Message& message) {
         break;
     case net::MessageType::Snapshot:
     case net::MessageType::ActionRequest:
+    case net::MessageType::ResumeRequest:
         break;
     case net::MessageType::Ping:
     case net::MessageType::Pong:

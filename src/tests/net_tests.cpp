@@ -28,12 +28,13 @@ void testProtocolRoundTrips() {
         CHECK(payload<Hello>(decoded).nonce == 0x1122334455667788ull);
     }
     {
-        Message message{MessageType::Welcome, Welcome{1, 42, 60}};
+        Message message{MessageType::Welcome, Welcome{1, 42, 60, 0x1234567890ull}};
         Message decoded;
         CHECK(decode(encode(message), decoded));
         CHECK(payload<Welcome>(decoded).playerId == 1);
         CHECK(payload<Welcome>(decoded).sessionId == 42);
         CHECK(payload<Welcome>(decoded).tickRate == 60);
+        CHECK(payload<Welcome>(decoded).resumeToken == 0x1234567890ull);
     }
     {
         Message message{MessageType::LobbyState, LobbyState{1, true, 0xABCDEF}};
@@ -235,6 +236,15 @@ void testProtocolRoundTrips() {
         CHECK(outGem.mods[0].label == "+15% SKILL DAMAGE");
         CHECK(out.players[0].equipment[1].name.empty());
         CHECK(out.players[1].inventory.empty());
+    }
+    {
+        Message message{MessageType::ResumeRequest, ResumeRequest{42, 1, 0xCAFEBABEull}};
+        Message decoded;
+        CHECK(decode(encode(message), decoded));
+        CHECK(decoded.type == MessageType::ResumeRequest);
+        CHECK(payload<ResumeRequest>(decoded).sessionId == 42);
+        CHECK(payload<ResumeRequest>(decoded).playerId == 1);
+        CHECK(payload<ResumeRequest>(decoded).token == 0xCAFEBABEull);
     }
     {
         Message message{MessageType::ActionRequest, ActionRequest{1, 1, 7}};
