@@ -1,0 +1,26 @@
+# Build output
+build/
+cmake-build-*/
+out/
+*.o
+*.obj
+*.dSYM/
+
+# CMake / tooling
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+# IDE
+.idea/
+.vscode/
+*.xcodeproj/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Local sandbox override
+.pi/
