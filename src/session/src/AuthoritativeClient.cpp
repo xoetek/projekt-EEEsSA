@@ -26,21 +26,33 @@ AuthoritativeClient::AuthoritativeClient(net::ITransport& transport,
 
 void AuthoritativeClient::sendInput(const core::PlayerInput& input) {
     if (disconnected_) return;
-    const core::u64 target = serverTick_ + inputDelay_;
-    if (target <= lastSentTick_) return;
 
-    net::Message message;
-    message.type = net::MessageType::InputCommand;
-    message.payload = net::InputCommand{static_cast<core::u8>(localPlayer_), target, input};
-    if (!transport_.send(connection_, net::encode(message))) {
-        disconnected_ = true;
+    // Fill the server's input pipeline, not just one future tick. The server
+    // may already be at tick N (for example after the neutral warm-up) and will
+    // need N, N+1, ... as soon as it simulates. Sending only N+delay left it
+    // stalled forever.
+    core::u64 first = std::max(std::max(nextInputTick_, serverTick_),
+                               static_cast<core::u64>(inputDelay_));
+    const core::u64 last = serverTick_ + inputDelay_;
+    if (last < first) {
         return;
     }
-    lastSentTick_ = target;
-    if (sentInputs_.size() >= kMaxSentInputs) {
-        sentInputs_.pop_front();
+
+    for (core::u64 tick = first; tick <= last; ++tick) {
+        net::Message message;
+        message.type = net::MessageType::InputCommand;
+        message.payload =
+            net::InputCommand{static_cast<core::u8>(localPlayer_), tick, input};
+        if (!transport_.send(connection_, net::encode(message))) {
+            disconnected_ = true;
+            return;
+        }
+        if (sentInputs_.size() >= kMaxSentInputs) {
+            sentInputs_.pop_front();
+        }
+        sentInputs_.push_back(SentInput{tick, input});
     }
-    sentInputs_.push_back(SentInput{target, input});
+    nextInputTick_ = last + 1;
 }
 
 void AuthoritativeClient::sendAction(core::u8 action, core::u16 index) {

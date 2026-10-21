@@ -269,6 +269,8 @@ public:
     [[nodiscard]] core::u64 checksum() const;
     [[nodiscard]] core::WorldSnapshot captureNetworkSnapshot(core::u64 tick) const;
     void applyNetworkSnapshot(const core::WorldSnapshot& snapshot);
+    // Authoritative respawn (P0 also clears the global death menu).
+    void respawnPlayer(core::PlayerId id);
     // Server-side inventory action: 0 = equip/use, 1 = drop.
     bool applyInventoryAction(core::PlayerId id, core::u8 action, core::u16 index);
     [[nodiscard]] bool takeGraphicsRequest() {

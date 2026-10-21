@@ -746,7 +746,8 @@ void appendSettings(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
 
 void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
                     core::u64 sessionTick, bool desynced, bool disconnected,
-                    core::i32 selection, core::f32 width, core::f32 height) {
+                    bool localDead, core::i32 selection, core::f32 width,
+                    core::f32 height) {
     const core::f32 ui = std::max(2.0f, height / 300.0f);
     const core::Vec2 center{width * 0.5f, height * 0.5f};
     const core::f32 panelW = std::min(width - ui * 40.0f, ui * 380.0f);
@@ -755,10 +756,13 @@ void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
     render::appendOverlayRect(snapshot, center, {panelW, panelH}, kPanel);
     appendBorder(snapshot, center, {panelW, panelH}, ui * 1.2f, kBorder);
 
-    const char* title = desynced ? "DESYNC" : disconnected ? "PEER LEFT" : "CO-OP MENU";
+    const char* title = desynced ? "DESYNC"
+                        : disconnected ? "PEER LEFT"
+                        : localDead   ? "YOU DIED"
+                                      : "CO-OP MENU";
     render::appendDebugTextCentered(snapshot, title, center.x,
                                     center.y + panelH * 0.5f - ui * 24.0f, ui * 1.6f,
-                                    desynced ? kEnemyHealth : kGold);
+                                    (desynced || localDead) ? kEnemyHealth : kGold);
 
     char line[192];
     const logic::PlayerState& local = game.player(game.localViewerId());
@@ -783,7 +787,7 @@ void appendCoopMenu(scene::SceneSnapshot& snapshot, const logic::RpgGame& game,
     if (desynced || disconnected) {
         render::appendDebugTextCentered(snapshot, "> LEAVE <", center.x, center.y, ui, kGold);
     } else {
-        const char* options[] = {"RESUME", "LEAVE"};
+        const char* options[] = {localDead ? "RESPAWN AT FIRE" : "RESUME", "LEAVE"};
         core::f32 y = center.y + ui * 10.0f;
         for (core::i32 i = 0; i < 2; ++i) {
             const bool selected = i == selection;
@@ -923,6 +927,7 @@ int main(int argc, char** argv) {
     core::i32 coopMenuSelection = 0;
     bool coopInventoryOpen = false;
     core::i32 coopInventorySelection = 0;
+    bool coopWasDead = false;
     bool coopDesync = false;
 
     auto fail = [&](int code) {
@@ -1188,7 +1193,11 @@ int main(int argc, char** argv) {
                 device->setVSync(settings.vsync);
             }
 
+            bool localDead = game.player(localPlayerId).playerDead;
             bool leave = false;
+            if (localDead && coopInventoryOpen) {
+                coopInventoryOpen = false;
+            }
             if (coopInventoryOpen) {
                 const core::i32 count =
                     static_cast<core::i32>(game.inventory().size());
@@ -1242,7 +1251,15 @@ int main(int argc, char** argv) {
                         coopMenuSelection = (coopMenuSelection + 1) % 2;
                     }
                     if (input.wasPressed(core::Key::Enter)) {
-                        if (coopMenuSelection == 0) {
+                        if (localDead) {
+                            if (coopMenuSelection == 0) {
+                                if (authoritativeMode) {
+                                    authoritativeClient->sendAction(2, 0);
+                                }
+                            } else {
+                                leave = true;
+                            }
+                        } else if (coopMenuSelection == 0) {
                             coopMenuOpen = false;
                         } else {
                             leave = true;
@@ -1297,6 +1314,15 @@ int main(int argc, char** argv) {
             for (const core::SoundId sound : game.takeSoundEvents()) {
                 platform::playSound(sound);
             }
+            localDead = game.player(localPlayerId).playerDead;
+            if (localDead && !coopMenuOpen) {
+                coopMenuOpen = true;
+                coopMenuSelection = 0;
+                coopInventoryOpen = false;
+            } else if (!localDead && coopWasDead && coopMenuOpen) {
+                coopMenuOpen = false;
+            }
+            coopWasDead = localDead;
             if (!coopMenuOpen && !coopInventoryOpen) {
                 game.applyLocalCameraInput(dt, input, localPlayerId);
             }
@@ -1395,7 +1421,7 @@ int main(int argc, char** argv) {
                 authoritativeMode ? authoritativeClient->disconnected()
                                   : coopSession->disconnected();
             appendCoopMenu(snapshot, game, sessionTick, coopDesync, sessionDisconnected,
-                           coopMenuSelection,
+                           game.player(localPlayerId).playerDead, coopMenuSelection,
                            static_cast<core::f32>(framebufferWidth),
                            static_cast<core::f32>(framebufferHeight));
         }

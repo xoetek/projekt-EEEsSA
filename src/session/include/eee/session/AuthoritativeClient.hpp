@@ -85,7 +85,7 @@ private:
     core::PlayerId localPlayer_;
     core::u32 inputDelay_;
     core::u64 serverTick_ = 0;
-    core::u64 lastSentTick_ = 0;
+    core::u64 nextInputTick_ = 0;
     core::u64 lastSnapshotTick_ = 0;
     core::u32 snapshotsApplied_ = 0;
     bool disconnected_ = false;

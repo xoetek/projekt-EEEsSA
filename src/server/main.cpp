@@ -190,62 +190,66 @@ int main(int argc, char** argv) {
             }
         };
 
-        auto simulateAuthoritative = [&]() {
-            while (true) {
-                const bool neutralWarmup = authoritativeTick < 3;
-                bool ready = neutralWarmup;
-                if (!ready) {
-                    ready = pendingInputs[0].find(authoritativeTick) != pendingInputs[0].end() &&
-                            pendingInputs[1].find(authoritativeTick) != pendingInputs[1].end();
-                }
-                if (!ready) break;
+        auto trySimulateAuthoritative = [&]() -> bool {
+            if (authoritative.uiMode() != eee::logic::UiMode::Playing) {
+                return false;
+            }
+            const bool neutralWarmup = authoritativeTick < 3;
+            bool ready = neutralWarmup;
+            if (!ready) {
+                ready = pendingInputs[0].find(authoritativeTick) != pendingInputs[0].end() &&
+                        pendingInputs[1].find(authoritativeTick) != pendingInputs[1].end();
+            }
+            if (!ready) {
+                return false;
+            }
 
-                eee::core::InputFrame frame;
-                frame.activePlayers = 2;
+            eee::core::InputFrame frame;
+            frame.activePlayers = 2;
+            for (int p = 0; p < 2; ++p) {
+                auto it = pendingInputs[p].find(authoritativeTick);
+                if (it != pendingInputs[p].end()) {
+                    frame.players[p] = it->second;
+                    pendingInputs[p].erase(it);
+                }
+            }
+            authoritative.updateFrame(1.0f / 60.0f, frame);
+            ++authoritativeTick;
+
+            Message tickMessage;
+            tickMessage.type = MessageType::ServerTick;
+            tickMessage.payload = eee::net::ServerTick{authoritativeTick};
+            for (ConnectionId id : connections) {
+                send(transport, id, tickMessage);
+            }
+
+            eee::core::WorldSnapshot snapshot =
+                authoritative.captureNetworkSnapshot(authoritativeTick);
+            Message snapshotMessage;
+            snapshotMessage.type = MessageType::Snapshot;
+            snapshotMessage.payload = std::move(snapshot);
+            for (ConnectionId id : connections) {
+                if (send(transport, id, snapshotMessage)) {
+                    ++snapshotsSent;
+                }
+            }
+
+            if (authoritativeTick % 30 == 0) {
+                const eee::core::u64 hash = authoritative.checksum();
+                serverChecksums[authoritativeTick] = hash;
                 for (int p = 0; p < 2; ++p) {
-                    auto it = pendingInputs[p].find(authoritativeTick);
-                    if (it != pendingInputs[p].end()) {
-                        frame.players[p] = it->second;
-                        pendingInputs[p].erase(it);
-                    }
-                }
-                authoritative.updateFrame(1.0f / 60.0f, frame);
-                ++authoritativeTick;
-
-                Message tickMessage;
-                tickMessage.type = MessageType::ServerTick;
-                tickMessage.payload = eee::net::ServerTick{authoritativeTick};
-                for (ConnectionId id : connections) {
-                    send(transport, id, tickMessage);
-                }
-
-                eee::core::WorldSnapshot snapshot =
-                    authoritative.captureNetworkSnapshot(authoritativeTick);
-                Message snapshotMessage;
-                snapshotMessage.type = MessageType::Snapshot;
-                snapshotMessage.payload = std::move(snapshot);
-                for (ConnectionId id : connections) {
-                    if (send(transport, id, snapshotMessage)) {
-                        ++snapshotsSent;
-                    }
-                }
-
-                if (authoritativeTick % 30 == 0) {
-                    const eee::core::u64 hash = authoritative.checksum();
-                    serverChecksums[authoritativeTick] = hash;
-                    for (int p = 0; p < 2; ++p) {
-                        auto it = clientChecksums[p].find(authoritativeTick);
-                        if (it != clientChecksums[p].end()) {
-                            compareChecksum(p, authoritativeTick, it->second);
-                        }
+                    auto it = clientChecksums[p].find(authoritativeTick);
+                    if (it != clientChecksums[p].end()) {
+                        compareChecksum(p, authoritativeTick, it->second);
                     }
                 }
             }
+            return true;
         };
 
-        simulateAuthoritative();
-
         std::array<bool, 2> active{true, true};
+        auto lastSimulation = std::chrono::steady_clock::now();
+        eee::core::f32 simulationAccumulator = 0.0f;
         while (active[0] || active[1]) {
             for (int i = 0; i < 2; ++i) {
                 if (!active[i]) continue;
@@ -274,9 +278,14 @@ int main(int argc, char** argv) {
                     } else if (message.type == MessageType::ActionRequest) {
                         const auto& action = std::get<eee::net::ActionRequest>(message.payload);
                         if (action.playerId == i) {
-                            authoritative.applyInventoryAction(
-                                static_cast<eee::core::PlayerId>(action.playerId), action.action,
-                                action.index);
+                            if (action.action == 2) {
+                                authoritative.respawnPlayer(
+                                    static_cast<eee::core::PlayerId>(action.playerId));
+                            } else {
+                                authoritative.applyInventoryAction(
+                                    static_cast<eee::core::PlayerId>(action.playerId),
+                                    action.action, action.index);
+                            }
                         }
                     }
 
@@ -286,10 +295,6 @@ int main(int argc, char** argv) {
                         message.type == MessageType::Pong) {
                         if (active[other]) {
                             transport.send(connections[other], *bytes);
-                        }
-                        if (message.type == MessageType::InputCommand ||
-                            message.type == MessageType::Checksum) {
-                            simulateAuthoritative();
                         }
                     }
                 }
@@ -306,7 +311,20 @@ int main(int argc, char** argv) {
                 send(transport, connections[remaining], bye);
                 active[remaining] = false;
             }
-            simulateAuthoritative();
+            const auto now = std::chrono::steady_clock::now();
+            const float elapsed = std::chrono::duration<float>(now - lastSimulation).count();
+            lastSimulation = now;
+            simulationAccumulator += std::min(elapsed, 0.25f);
+            int steps = 0;
+            while (simulationAccumulator >= 1.0f / 60.0f && steps < 5) {
+                if (!trySimulateAuthoritative()) {
+                    break;
+                }
+                simulationAccumulator -= 1.0f / 60.0f;
+                ++steps;
+            }
+            simulationAccumulator =
+                std::min(simulationAccumulator, 5.0f * (1.0f / 60.0f));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 

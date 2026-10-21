@@ -191,8 +191,9 @@ public:
                                                                  core::u16) override {
         return std::nullopt;
     }
-    bool send(eee::net::ConnectionId, std::span<const core::u8>) override {
+    bool send(eee::net::ConnectionId, std::span<const core::u8> payload) override {
         ++sent_;
+        sentPayloads_.emplace_back(payload.begin(), payload.end());
         return true;
     }
     [[nodiscard]] std::optional<std::vector<core::u8>> receive(
@@ -208,9 +209,13 @@ public:
 
     void push(const eee::net::Message& message) { inbox_.push_back(eee::net::encode(message)); }
     [[nodiscard]] core::u32 sent() const { return sent_; }
+    [[nodiscard]] const std::vector<std::vector<core::u8>>& sentPayloads() const {
+        return sentPayloads_;
+    }
 
 private:
     std::deque<std::vector<core::u8>> inbox_;
+    std::vector<std::vector<core::u8>> sentPayloads_;
     core::u32 sent_ = 0;
 };
 
@@ -250,7 +255,22 @@ void testAuthoritativePredictionReconciliation() {
     forward.cameraYaw = 0.0f;
     forward.cameraPitch = 0.36f;
     client.sendInput(forward);
-    CHECK(client.pendingInputCount() == 1);
+    CHECK(client.pendingInputCount() == 4); // server tick 100..103
+
+    // Regression: the first input batch must start at the server's next tick,
+    // not serverTick + inputDelay, and must be gap-free.
+    const auto& sentPayloads = transport.sentPayloads();
+    CHECK(sentPayloads.size() >= 5); // checksum + four inputs
+    for (int i = 0; i < 4 && static_cast<size_t>(i) < sentPayloads.size(); ++i) {
+        const auto& bytes = sentPayloads[sentPayloads.size() - 4 + static_cast<size_t>(i)];
+        eee::net::Message sentMessage;
+        CHECK(eee::net::decode(bytes, sentMessage));
+        CHECK(sentMessage.type == eee::net::MessageType::InputCommand);
+        const auto& command = std::get<eee::net::InputCommand>(sentMessage.payload);
+        CHECK(command.playerId == 1);
+        CHECK(command.tick == static_cast<core::u64>(100 + i));
+    }
+
     client.updatePrediction(game, forward, 1.0f / 60.0f);
 
     CHECK(client.predictedPlayer().valid);

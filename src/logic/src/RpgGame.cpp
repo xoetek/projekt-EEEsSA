@@ -1726,17 +1726,26 @@ void RpgGame::useInventoryItem() {
     emit(core::SoundId::MenuSelect);
 }
 
-void RpgGame::respawn() {
-    active().position = active().respawnPoint;
-    active().health = active().maxHealth;
-    active().mana = active().maxMana;
-    active().jumpHeight = 0.0f;
-    active().verticalVelocity = 0.0f;
-    active().grounded = true;
-    mode_ = UiMode::Playing;
-    menuSelection_ = 0;
-    setMessage("YOU WAKE BY THE FIRE");
+void RpgGame::respawnPlayer(core::PlayerId id) {
+    PlayerState& player = players_[static_cast<core::usize>(id)];
+    player.position = player.respawnPoint;
+    player.health = player.maxHealth;
+    player.mana = player.maxMana;
+    player.jumpHeight = 0.0f;
+    player.verticalVelocity = 0.0f;
+    player.grounded = true;
+    player.playerDead = false;
+    if (id == core::PlayerId::P0 || activePlayers_ == 1) {
+        mode_ = UiMode::Playing;
+        menuSelection_ = 0;
+    }
+    setMessage(id == core::PlayerId::P0 ? "YOU WAKE BY THE FIRE" : "ALLY RETURNS TO THE FIRE");
     emit(core::SoundId::Heal);
+}
+
+void RpgGame::respawn() {
+    activeId_ = localViewer_;
+    respawnPlayer(localViewer_);
 }
 
 void RpgGame::restAtFire() {
