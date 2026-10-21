@@ -1,6 +1,7 @@
 #include "TestHarness.hpp"
 
 #include "eee/net/Protocol.hpp"
+#include "eee/net/RateLimiter.hpp"
 #include "eee/net/TcpTransport.hpp"
 
 #include <chrono>
@@ -321,6 +322,20 @@ std::optional<ConnectionId> acceptWithTimeout(TcpTransport& transport,
     return std::nullopt;
 }
 
+void testRateLimiter() {
+    eee::net::TokenBucket bucket(10.0, 3.0);
+    CHECK(bucket.consume(0.0));
+    CHECK(bucket.consume(0.0));
+    CHECK(bucket.consume(0.0));
+    CHECK(!bucket.consume(0.0)); // burst exhausted
+    CHECK(bucket.consume(0.1));  // one refilled
+    CHECK(!bucket.consume(0.1));
+    CHECK(bucket.consume(10.0)); // full refill after idle, capped at burst
+    CHECK(bucket.consume(10.0));
+    CHECK(bucket.consume(10.0));
+    CHECK(!bucket.consume(10.0));
+}
+
 void testTcpLoopback() {
     TcpTransport server;
     if (!server.listen(0)) {
@@ -375,6 +390,7 @@ void testTcpLoopback() {
 int main() {
     testProtocolRoundTrips();
     testMalformedFrames();
+    testRateLimiter();
     testTcpLoopback();
     if (gTcpUnavailable) {
         const int status = eee::test::report("net (TCP skipped)");

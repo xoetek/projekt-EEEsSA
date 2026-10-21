@@ -250,9 +250,13 @@ and static world identity.
 - ✅ Debug hook: **F8** drops the client TCP connection so reconnect can be exercised on localhost.
 - ⏳ Reconnect currently requires the server process/session to still be within its 20s grace; no reconnect after session end.
 
-### A7 — Security hardening
-- TLS/auth, rate limiting, tick-window validation, kick/ban plumbing.
-- Abuse tests: malformed frames, replay, impossible input rate.
+### A7 — Security hardening (A7a ✅ / A7b next)
+- ✅ Per-connection token-bucket rate limits (messages and inventory actions).
+- ✅ Input tick-window validation; playerId must match the connection.
+- ✅ Invalid-command budget disconnects abusive clients; malformed frames already disconnect.
+- ✅ Respawn action is only accepted for dead players.
+- ⏳ TLS/authentication are **not** implemented. The protocol is plaintext and unauthenticated; use a firewall/VPN or a TLS terminator before exposing it publicly.
+- ⏳ Kick/ban persistence and replay protection are future work.
 
 ### A8 — Matchmaking / NAT
 - Lobby service, server directory, relay fallback.

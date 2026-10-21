@@ -1,6 +1,7 @@
 #include "eee/core/Log.hpp"
 #include "eee/logic/RpgGame.hpp"
 #include "eee/net/Protocol.hpp"
+#include "eee/net/RateLimiter.hpp"
 #include "eee/net/TcpTransport.hpp"
 
 #include <array>
@@ -182,6 +183,13 @@ int main(int argc, char** argv) {
         std::array<bool, 2> active{true, true};
         std::array<bool, 2> grace{false, false};
         std::array<std::chrono::steady_clock::time_point, 2> graceDeadline{};
+        struct ClientGuard {
+            eee::net::TokenBucket messages{300.0, 120.0};
+            eee::net::TokenBucket actions{20.0, 10.0};
+            eee::core::u32 invalidTicks = 0;
+        };
+        std::array<ClientGuard, 2> guards{};
+        const auto sessionStart = std::chrono::steady_clock::now();
 
         auto compareChecksum = [&](int client, eee::core::u64 tick, eee::core::u64 hash) {
             const auto server = serverChecksums.find(tick);
@@ -274,6 +282,7 @@ int main(int argc, char** argv) {
             graceDeadline[p] = std::chrono::steady_clock::now() + std::chrono::seconds(20);
             pendingInputs[p].clear();
             clientChecksums[p].clear();
+            guards[p] = ClientGuard{};
             logf(LogLevel::Warning, "server: P%d disconnected; holding slot for 20s", p);
         };
 
@@ -295,6 +304,7 @@ int main(int argc, char** argv) {
                         grace[slot] = false;
                         pendingInputs[slot].clear();
                         clientChecksums[slot].clear();
+                        guards[slot] = ClientGuard{};
 
                         Message welcome;
                         welcome.type = MessageType::Welcome;
@@ -318,11 +328,20 @@ int main(int argc, char** argv) {
                 }
             }
 
+            const double messageSeconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - sessionStart)
+                    .count();
+
             for (int i = 0; i < 2; ++i) {
                 if (!active[i]) continue;
                 while (true) {
                     auto bytes = transport.receive(connections[i]);
                     if (!bytes.has_value()) break;
+                    if (!guards[i].messages.consume(messageSeconds)) {
+                        logf(LogLevel::Warning, "server: P%d exceeded message rate", i);
+                        markDisconnected(i);
+                        break;
+                    }
                     Message message;
                     if (!eee::net::decode(*bytes, message)) {
                         markDisconnected(i);
@@ -334,8 +353,20 @@ int main(int argc, char** argv) {
                     }
                     if (message.type == MessageType::InputCommand) {
                         const auto& command = std::get<eee::net::InputCommand>(message.payload);
-                        if (command.playerId < 2 && command.tick >= authoritativeTick) {
-                            pendingInputs[command.playerId][command.tick] = command.input;
+                        const bool validPlayer = command.playerId == i;
+                        const bool tickInWindow =
+                            command.tick >= authoritativeTick &&
+                            command.tick <= authoritativeTick + 30;
+                        if (validPlayer && tickInWindow) {
+                            pendingInputs[i][command.tick] = command.input;
+                        } else {
+                            ++guards[i].invalidTicks;
+                            if (guards[i].invalidTicks > 20) {
+                                logf(LogLevel::Warning,
+                                     "server: P%d sent invalid input commands", i);
+                                markDisconnected(i);
+                                break;
+                            }
                         }
                     } else if (message.type == MessageType::Checksum) {
                         const auto& checksum = std::get<eee::net::Checksum>(message.payload);
@@ -343,14 +374,16 @@ int main(int argc, char** argv) {
                         compareChecksum(i, checksum.tick, checksum.hash);
                     } else if (message.type == MessageType::ActionRequest) {
                         const auto& action = std::get<eee::net::ActionRequest>(message.payload);
-                        if (action.playerId == i) {
+                        if (action.playerId == i && guards[i].actions.consume(messageSeconds)) {
+                            const auto playerId =
+                                static_cast<eee::core::PlayerId>(action.playerId);
                             if (action.action == 2) {
-                                authoritative.respawnPlayer(
-                                    static_cast<eee::core::PlayerId>(action.playerId));
+                                if (authoritative.player(playerId).playerDead) {
+                                    authoritative.respawnPlayer(playerId);
+                                }
                             } else {
-                                authoritative.applyInventoryAction(
-                                    static_cast<eee::core::PlayerId>(action.playerId),
-                                    action.action, action.index);
+                                authoritative.applyInventoryAction(playerId, action.action,
+                                                                    action.index);
                             }
                         }
                     }

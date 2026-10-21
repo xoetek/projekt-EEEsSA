@@ -306,9 +306,10 @@ Internet requirements and caveats:
 
 - The server needs a public IP/DNS name and an open TCP port (firewall/security
   group + port forwarding on a home router).
-- The protocol is **plaintext and unauthenticated**. Use it only with trusted
-  players, or put it behind a firewall/VPN. Do not expose it to the open
-  internet as-is.
+- The protocol is **plaintext and unauthenticated**. The server now applies
+  rate limits, input tick-window checks and player-id validation, but those are
+  robustness guards, not authentication. Use it only with trusted players, or put
+  it behind a firewall/VPN/TLS terminator. Do not expose it openly as-is.
 - NAT traversal, matchmaking, relay authentication and authoritative server
   simulation are not implemented yet.
 

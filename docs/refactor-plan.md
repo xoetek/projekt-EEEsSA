@@ -133,7 +133,10 @@ phase is meant to be shippable with the game still playable in single-player.
   - Remote interpolation for other player/enemies/projectiles/loot is complete.
 - **A6 — Zones/reconnect: ✅ complete.**
   - Deterministic per-zone static worlds, server-driven zone changes, respawn-at-fire and 20s reconnect grace with resume tokens.
-- **A7 — Security/robustness: next.**
+- **A7 — Security/robustness: A7a ✅.**
+  - Token-bucket rate limits, tick-window/playerId validation, malformed-frame disconnects and respawn guards.
+  - TLS/authentication and kick/ban persistence remain A7b.
+- **A7b — TLS/auth: next.**
 
 ---
 
