@@ -64,6 +64,7 @@ void applyKey(InputState* input, NSEvent* event, bool isDown) {
     case 60: input->setKey(Key::RightShift, isDown); break;
     case 122: input->setKey(Key::F1, isDown); break;
     case 120: input->setKey(Key::F2, isDown); break;
+    case 100: input->setKey(Key::F8, isDown); break;
     default: break;
     }
 }

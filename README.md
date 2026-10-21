@@ -250,6 +250,10 @@ smokes, runs full CTest, and writes logs to `build/test-logs/`. Override
 `BUILD_DIR` or `PORT_BASE` if needed. It exits non-zero only on a real failure;
 sandbox-blocked network tests are reported as skipped.
 
+Reconnect test: in a dedicated-server client press **F8** to drop the TCP
+connection; the client shows CONNECTION LOST, then Enter reconnects within the
+server's 20-second grace window.
+
 ### LAN co-op (first playable slice)
 
 ```sh

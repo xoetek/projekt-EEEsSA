@@ -67,6 +67,10 @@ void AuthoritativeClient::sendAction(core::u8 action, core::u16 index) {
 
 core::u32 AuthoritativeClient::poll(logic::RpgGame& game) {
     if (disconnected_) return 0;
+    if (!transport_.isConnected(connection_)) {
+        disconnected_ = true;
+        return 0;
+    }
     core::u32 applied = 0;
     while (true) {
         auto bytes = transport_.receive(connection_);
@@ -81,6 +85,9 @@ core::u32 AuthoritativeClient::poll(logic::RpgGame& game) {
             ++applied;
         }
         if (disconnected_) break;
+    }
+    if (!transport_.isConnected(connection_)) {
+        disconnected_ = true;
     }
     return applied;
 }

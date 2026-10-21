@@ -25,6 +25,7 @@ enum class Key : u16 {
     RightShift,
     F1,
     F2,
+    F8,
     Count
 };
 

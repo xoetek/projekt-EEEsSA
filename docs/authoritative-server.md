@@ -247,6 +247,7 @@ and static world identity.
 - ✅ Death → Respawn at Fire via an authoritative action; P0 respawn clears the death pause.
 - ✅ Reconnect: per-player resume tokens in `Welcome`, `ResumeRequest`, server slot grace of 20s, fresh snapshot on resume.
 - ✅ Client reconnect menu (CONNECT LOST → Reconnect/Leave).
+- ✅ Debug hook: **F8** drops the client TCP connection so reconnect can be exercised on localhost.
 - ⏳ Reconnect currently requires the server process/session to still be within its 20s grace; no reconnect after session end.
 
 ### A7 — Security hardening

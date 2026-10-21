@@ -1223,6 +1223,14 @@ int main(int argc, char** argv) {
             bool localDead = game.player(localPlayerId).playerDead;
             bool leave = false;
 
+            // Debug reconnect test: force-drop the TCP connection.
+            if (authoritativeMode && input.wasPressed(core::Key::F8)) {
+                core::logInfo("co-op: debug drop requested (F8)");
+                if (coopNet) {
+                    coopNet->close(coopConnection);
+                }
+            }
+
             auto tryReconnect = [&]() -> bool {
                 if (!authoritativeMode || coopJoinHost.empty() || coopJoinPort == 0 ||
                     coopResumeToken == 0) {
